@@ -17,7 +17,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install "cowork-platform[sdk] @ git+https://github.com/suman724/cowork-platform.git@feature/init"
+          pip install "cowork-platform[sdk] @ git+https://github.com/suman724/cowork-platform.git@main"
           pip install -e ".[dev]"
 
       - name: Lint
