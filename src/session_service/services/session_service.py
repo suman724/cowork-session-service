@@ -13,6 +13,7 @@ from session_service.clients.workspace_client import WorkspaceClient
 from session_service.config import Settings
 from session_service.exceptions import (
     ConflictError,
+    DownstreamError,
     IncompatibleError,
     SessionNotFoundError,
     ValidationError,
@@ -75,7 +76,10 @@ class SessionService:
             workspace_scope=workspace_scope,
             local_path=local_path,
         )
-        workspace_id: str = ws_result["workspaceId"]
+        try:
+            workspace_id: str = ws_result["workspaceId"]
+        except KeyError as exc:
+            raise DownstreamError("WorkspaceService", "missing workspaceId in response") from exc
 
         now = datetime.now(UTC)
         expires_at = now + timedelta(hours=self._settings.session_expiry_hours)
@@ -106,6 +110,7 @@ class SessionService:
             supported_capabilities=supported_capabilities,
             created_at=now,
             expires_at=expires_at,
+            ttl=int(expires_at.timestamp()),
         )
         await self._repo.create(session)
 

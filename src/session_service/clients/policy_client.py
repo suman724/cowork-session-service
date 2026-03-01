@@ -43,8 +43,12 @@ class PolicyClient:
                     body=resp.text[:200],
                 )
                 raise PolicyBundleError(f"Policy Service returned {resp.status_code}")
-            return resp.json()  # type: ignore[no-any-return]
-        except PolicyBundleError:
+            try:
+                data: dict[str, Any] = resp.json()
+            except ValueError as exc:
+                raise DownstreamError("PolicyService", "invalid JSON response") from exc
+            return data
+        except (PolicyBundleError, DownstreamError):
             raise
         except httpx.HTTPError as exc:
             raise DownstreamError("PolicyService", str(exc)) from exc
