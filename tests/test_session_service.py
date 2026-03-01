@@ -6,7 +6,12 @@ from typing import Any
 
 import pytest
 
-from session_service.exceptions import ConflictError, SessionNotFoundError, ValidationError
+from session_service.exceptions import (
+    ConflictError,
+    IncompatibleError,
+    SessionNotFoundError,
+    ValidationError,
+)
 from session_service.services.session_service import SessionService
 from tests.conftest import make_service_kwargs
 
@@ -84,6 +89,24 @@ class TestResumeSession:
     async def test_resume_not_found(self, session_service: SessionService) -> None:
         with pytest.raises(SessionNotFoundError):
             await session_service.resume_session("nonexistent")
+
+    async def test_resume_incompatible_session_blocked(
+        self, session_service: SessionService
+    ) -> None:
+        """Resuming a session created with incompatible versions must not bypass the gate."""
+        req = make_service_kwargs(
+            client_info={
+                "desktopAppVersion": "0.0.1",
+                "localAgentHostVersion": "1.0.0",
+                "osFamily": "macOS",
+            }
+        )
+        create_result = await session_service.create_session(**req)
+        assert create_result["compatibilityStatus"] == "incompatible"
+        session_id = create_result["sessionId"]
+
+        with pytest.raises(IncompatibleError):
+            await session_service.resume_session(session_id)
 
     async def test_resume_cancelled_session_fails(self, session_service: SessionService) -> None:
         create_result = await session_service.create_session(**make_service_kwargs())

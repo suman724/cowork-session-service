@@ -13,6 +13,7 @@ from session_service.clients.workspace_client import WorkspaceClient
 from session_service.config import Settings
 from session_service.exceptions import (
     ConflictError,
+    IncompatibleError,
     SessionNotFoundError,
     ValidationError,
 )
@@ -139,6 +140,16 @@ class SessionService:
         terminal = {"SESSION_COMPLETED", "SESSION_FAILED", "SESSION_CANCELLED"}
         if session.status in terminal:
             raise ConflictError(f"Cannot resume session in {session.status} state")
+
+        # Re-run compatibility check to prevent bypassing the gate
+        is_compatible, reason = check_compatibility(
+            desktop_app_version=session.desktop_app_version or "0.0.0",
+            agent_host_version=session.agent_host_version or "0.0.0",
+            supported_capabilities=session.supported_capabilities,
+            settings=self._settings,
+        )
+        if not is_compatible:
+            raise IncompatibleError(reason or "Client version incompatible")
 
         # Re-fetch policy
         policy_bundle = await self._policy_client.get_policy_bundle(
