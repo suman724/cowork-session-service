@@ -77,28 +77,14 @@ class SessionService:
         )
         workspace_id: str = ws_result["workspaceId"]
 
-        # Create session record
         now = datetime.now(UTC)
         expires_at = now + timedelta(hours=self._settings.session_expiry_hours)
         session_id = str(uuid.uuid4())
 
-        session = SessionDomain(
-            session_id=session_id,
-            workspace_id=workspace_id,
-            tenant_id=tenant_id,
-            user_id=user_id,
-            execution_environment=execution_environment,
-            status="SESSION_CREATED",
-            desktop_app_version=desktop_version,
-            agent_host_version=agent_version,
-            supported_capabilities=supported_capabilities,
-            created_at=now,
-            expires_at=expires_at,
-        )
-        await self._repo.create(session)
-
-        # Fetch policy bundle (only if compatible)
+        # Fetch policy bundle before persisting session so a downstream failure
+        # does not leave an orphaned SESSION_CREATED record
         policy_bundle = None
+        initial_status = "SESSION_CREATED"
         if is_compatible:
             policy_bundle = await self._policy_client.get_policy_bundle(
                 tenant_id=tenant_id,
@@ -106,8 +92,22 @@ class SessionService:
                 session_id=session_id,
                 capabilities=supported_capabilities,
             )
-            # Transition to active
-            await self._repo.update_status(session_id, "SESSION_RUNNING")
+            initial_status = "SESSION_RUNNING"
+
+        session = SessionDomain(
+            session_id=session_id,
+            workspace_id=workspace_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            execution_environment=execution_environment,
+            status=initial_status,
+            desktop_app_version=desktop_version,
+            agent_host_version=agent_version,
+            supported_capabilities=supported_capabilities,
+            created_at=now,
+            expires_at=expires_at,
+        )
+        await self._repo.create(session)
 
         logger.info(
             "session_created",
@@ -140,6 +140,11 @@ class SessionService:
         terminal = {"SESSION_COMPLETED", "SESSION_FAILED", "SESSION_CANCELLED"}
         if session.status in terminal:
             raise ConflictError(f"Cannot resume session in {session.status} state")
+
+        # Check session expiry
+        if datetime.now(UTC) >= session.expires_at:
+            await self._repo.update_status(session_id, "SESSION_FAILED")
+            raise ConflictError("Session has expired")
 
         # Re-run compatibility check to prevent bypassing the gate
         is_compatible, reason = check_compatibility(
