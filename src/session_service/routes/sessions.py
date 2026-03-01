@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends
 from starlette.responses import Response
 
 from session_service.dependencies import get_session_service
+from session_service.models.requests import CreateSessionRequest
 from session_service.services.session_service import SessionService
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
@@ -15,16 +16,16 @@ router = APIRouter(prefix="/sessions", tags=["sessions"])
 
 @router.post("", status_code=201)
 async def create_session(
-    body: dict[str, Any],
+    body: CreateSessionRequest,
     service: SessionService = Depends(get_session_service),
 ) -> dict[str, Any]:
     return await service.create_session(
-        tenant_id=body["tenantId"],
-        user_id=body["userId"],
-        execution_environment=body.get("executionEnvironment", "desktop"),
-        workspace_hint=body.get("workspaceHint"),
-        client_info=body.get("clientInfo", {}),
-        supported_capabilities=body.get("supportedCapabilities", []),
+        tenant_id=body.tenant_id,
+        user_id=body.user_id,
+        execution_environment=body.execution_environment,
+        workspace_hint=body.workspace_hint,
+        client_info=body.client_info,
+        supported_capabilities=body.supported_capabilities,
     )
 
 

@@ -51,6 +51,16 @@ class TestSessionRoutes:
         resp = await client.post(f"/sessions/{session_id}/cancel")
         assert resp.status_code == 204
 
+    async def test_create_missing_tenant_id(self, client: AsyncClient) -> None:
+        body = make_create_request()
+        del body["tenantId"]
+        resp = await client.post("/sessions", json=body)
+        assert resp.status_code == 422
+
+    async def test_create_empty_tenant_id(self, client: AsyncClient) -> None:
+        resp = await client.post("/sessions", json=make_create_request(tenantId=""))
+        assert resp.status_code == 422
+
     async def test_get_not_found(self, client: AsyncClient) -> None:
         resp = await client.get("/sessions/nonexistent")
         assert resp.status_code == 404
