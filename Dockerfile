@@ -6,13 +6,14 @@ RUN adduser --system --no-create-home appuser
 
 FROM base AS builder
 
-RUN pip install --no-cache-dir hatch
+RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir "cowork-platform[sdk] @ git+https://github.com/suman724/cowork-platform.git@main"
 
 COPY pyproject.toml .
 COPY src/ src/
 
-RUN pip install --no-cache-dir . && \
-    pip install --no-cache-dir "cowork-platform[sdk] @ git+https://github.com/suman724/cowork-platform.git@feature/init"
+RUN pip install --no-cache-dir .
 
 FROM base AS runtime
 
