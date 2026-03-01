@@ -49,7 +49,7 @@ class SessionService:
         supported_capabilities: list[str],
     ) -> dict[str, Any]:
         """Create a new session — the handshake endpoint."""
-        if not tenant_id or not user_id:
+        if not tenant_id.strip() or not user_id.strip():
             raise ValidationError("tenantId and userId are required")
 
         desktop_version = client_info.get("desktopAppVersion", "0.0.0")
@@ -67,7 +67,10 @@ class SessionService:
         local_path = None
         workspace_scope = "general"
         if workspace_hint and workspace_hint.get("localPaths"):
-            local_path = workspace_hint["localPaths"][0]
+            local_paths = workspace_hint["localPaths"]
+            if not isinstance(local_paths, list) or not local_paths:
+                raise ValidationError("workspaceHint.localPaths must be a non-empty list")
+            local_path = local_paths[0]
             workspace_scope = "local"
 
         ws_result = await self._workspace_client.create_workspace(
@@ -142,8 +145,7 @@ class SessionService:
         if session is None:
             raise SessionNotFoundError(session_id)
 
-        terminal = {"SESSION_COMPLETED", "SESSION_FAILED", "SESSION_CANCELLED"}
-        if session.status in terminal:
+        if session.status != "SESSION_RUNNING" and not session.can_transition_to("SESSION_RUNNING"):
             raise ConflictError(f"Cannot resume session in {session.status} state")
 
         # Check session expiry
