@@ -13,6 +13,7 @@ from session_service.clients.workspace_client import WorkspaceClient
 from session_service.config import Settings
 from session_service.exceptions import (
     ConflictError,
+    DownstreamError,
     IncompatibleError,
     SessionNotFoundError,
     ValidationError,
@@ -48,7 +49,7 @@ class SessionService:
         supported_capabilities: list[str],
     ) -> dict[str, Any]:
         """Create a new session — the handshake endpoint."""
-        if not tenant_id or not user_id:
+        if not tenant_id.strip() or not user_id.strip():
             raise ValidationError("tenantId and userId are required")
 
         desktop_version = client_info.get("desktopAppVersion", "0.0.0")
@@ -66,7 +67,10 @@ class SessionService:
         local_path = None
         workspace_scope = "general"
         if workspace_hint and workspace_hint.get("localPaths"):
-            local_path = workspace_hint["localPaths"][0]
+            local_paths = workspace_hint["localPaths"]
+            if not isinstance(local_paths, list) or not local_paths:
+                raise ValidationError("workspaceHint.localPaths must be a non-empty list")
+            local_path = local_paths[0]
             workspace_scope = "local"
 
         ws_result = await self._workspace_client.create_workspace(
@@ -75,30 +79,19 @@ class SessionService:
             workspace_scope=workspace_scope,
             local_path=local_path,
         )
-        workspace_id: str = ws_result["workspaceId"]
+        try:
+            workspace_id: str = ws_result["workspaceId"]
+        except KeyError as exc:
+            raise DownstreamError("WorkspaceService", "missing workspaceId in response") from exc
 
-        # Create session record
         now = datetime.now(UTC)
         expires_at = now + timedelta(hours=self._settings.session_expiry_hours)
         session_id = str(uuid.uuid4())
 
-        session = SessionDomain(
-            session_id=session_id,
-            workspace_id=workspace_id,
-            tenant_id=tenant_id,
-            user_id=user_id,
-            execution_environment=execution_environment,
-            status="SESSION_CREATED",
-            desktop_app_version=desktop_version,
-            agent_host_version=agent_version,
-            supported_capabilities=supported_capabilities,
-            created_at=now,
-            expires_at=expires_at,
-        )
-        await self._repo.create(session)
-
-        # Fetch policy bundle (only if compatible)
+        # Fetch policy bundle before persisting session so a downstream failure
+        # does not leave an orphaned SESSION_CREATED record
         policy_bundle = None
+        initial_status = "SESSION_CREATED"
         if is_compatible:
             policy_bundle = await self._policy_client.get_policy_bundle(
                 tenant_id=tenant_id,
@@ -106,8 +99,23 @@ class SessionService:
                 session_id=session_id,
                 capabilities=supported_capabilities,
             )
-            # Transition to active
-            await self._repo.update_status(session_id, "SESSION_RUNNING")
+            initial_status = "SESSION_RUNNING"
+
+        session = SessionDomain(
+            session_id=session_id,
+            workspace_id=workspace_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            execution_environment=execution_environment,
+            status=initial_status,
+            desktop_app_version=desktop_version,
+            agent_host_version=agent_version,
+            supported_capabilities=supported_capabilities,
+            created_at=now,
+            expires_at=expires_at,
+            ttl=int(expires_at.timestamp()),
+        )
+        await self._repo.create(session)
 
         logger.info(
             "session_created",
@@ -137,9 +145,13 @@ class SessionService:
         if session is None:
             raise SessionNotFoundError(session_id)
 
-        terminal = {"SESSION_COMPLETED", "SESSION_FAILED", "SESSION_CANCELLED"}
-        if session.status in terminal:
+        if session.status != "SESSION_RUNNING" and not session.can_transition_to("SESSION_RUNNING"):
             raise ConflictError(f"Cannot resume session in {session.status} state")
+
+        # Check session expiry
+        if datetime.now(UTC) >= session.expires_at:
+            await self._repo.update_status(session_id, "SESSION_FAILED")
+            raise ConflictError("Session has expired")
 
         # Re-run compatibility check to prevent bypassing the gate
         is_compatible, reason = check_compatibility(

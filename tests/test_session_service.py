@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -12,6 +13,7 @@ from session_service.exceptions import (
     SessionNotFoundError,
     ValidationError,
 )
+from session_service.repositories.memory import InMemorySessionRepository
 from session_service.services.session_service import SessionService
 from tests.conftest import make_service_kwargs
 
@@ -107,6 +109,24 @@ class TestResumeSession:
 
         with pytest.raises(IncompatibleError):
             await session_service.resume_session(session_id)
+
+    async def test_resume_expired_session_fails(
+        self, session_service: SessionService, session_repo: InMemorySessionRepository
+    ) -> None:
+        """Resuming an expired session must fail even if status is not terminal."""
+        create_result = await session_service.create_session(**make_service_kwargs())
+        session_id = create_result["sessionId"]
+
+        # Force session to be expired by setting expires_at in the past
+        stored = session_repo._sessions[session_id]
+        stored.expires_at = datetime.now(UTC) - timedelta(hours=1)
+
+        with pytest.raises(ConflictError, match="expired"):
+            await session_service.resume_session(session_id)
+
+        # Verify session was marked as failed
+        result = await session_service.get_session(session_id)
+        assert result["status"] == "SESSION_FAILED"
 
     async def test_resume_cancelled_session_fails(self, session_service: SessionService) -> None:
         create_result = await session_service.create_session(**make_service_kwargs())

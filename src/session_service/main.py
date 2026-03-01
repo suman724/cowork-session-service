@@ -77,18 +77,31 @@ def create_app() -> FastAPI:
     app.include_router(sessions.router)
 
     app.add_exception_handler(ServiceError, _service_error_handler)
+    app.add_exception_handler(Exception, _unhandled_error_handler)
 
     return app
 
 
 async def _service_error_handler(request: Request, exc: Exception) -> JSONResponse:
-    assert isinstance(exc, ServiceError)  # noqa: S101
+    se = (
+        exc
+        if isinstance(exc, ServiceError)
+        else ServiceError("Unknown", code="INTERNAL_ERROR", status_code=500)
+    )
     body: dict[str, Any] = {
-        "code": exc.code,
-        "message": exc.message,
-        "retryable": exc.status_code >= 500,
+        "code": se.code,
+        "message": se.message,
+        "retryable": se.status_code >= 500,
     }
-    return JSONResponse(status_code=exc.status_code, content=body)
+    return JSONResponse(status_code=se.status_code, content=body)
+
+
+async def _unhandled_error_handler(request: Request, exc: Exception) -> JSONResponse:
+    logger.exception("unhandled_error", path=request.url.path)
+    return JSONResponse(
+        status_code=500,
+        content={"code": "INTERNAL_ERROR", "message": "Internal server error", "retryable": True},
+    )
 
 
 app = create_app()

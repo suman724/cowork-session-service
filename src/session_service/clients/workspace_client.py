@@ -43,7 +43,11 @@ class WorkspaceClient:
                     body=resp.text[:200],
                 )
                 raise DownstreamError("WorkspaceService", f"returned {resp.status_code}")
-            return resp.json()  # type: ignore[no-any-return]
+            try:
+                data: dict[str, Any] = resp.json()
+            except ValueError as exc:
+                raise DownstreamError("WorkspaceService", "invalid JSON response") from exc
+            return data
         except DownstreamError:
             raise
         except httpx.HTTPError as exc:

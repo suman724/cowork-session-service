@@ -39,7 +39,8 @@ class DynamoSessionRepository:
     async def list_by_tenant_user(self, tenant_id: str, user_id: str) -> list[SessionDomain]:
         resp = await self._table.query(
             IndexName="tenantId-userId-index",
-            KeyConditionExpression="tenantId = :tid AND userId = :uid",
+            KeyConditionExpression="tenantId = :tid",
+            FilterExpression="userId = :uid",
             ExpressionAttributeValues={":tid": tenant_id, ":uid": user_id},
         )
         return [_from_item(item) for item in resp.get("Items", [])]
