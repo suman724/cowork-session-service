@@ -1,0 +1,155 @@
+"""Tests for SessionService handshake, resume, cancel."""
+
+from __future__ import annotations
+
+from typing import Any
+
+import pytest
+
+from session_service.exceptions import (
+    ConflictError,
+    IncompatibleError,
+    SessionNotFoundError,
+    ValidationError,
+)
+from session_service.services.session_service import SessionService
+from tests.conftest import make_service_kwargs
+
+
+@pytest.mark.unit
+class TestCreateSession:
+    async def test_creates_session_successfully(self, session_service: SessionService) -> None:
+        result = await session_service.create_session(**make_service_kwargs())
+        assert result["sessionId"]
+        assert result["workspaceId"] == "ws-1"
+        assert result["compatibilityStatus"] == "compatible"
+        assert result["policyBundle"] is not None
+
+    async def test_creates_with_workspace_hint(
+        self,
+        session_service: SessionService,
+        mock_workspace_client: Any,
+    ) -> None:
+        req = make_service_kwargs(workspace_hint={"localPaths": ["/home/user/project"]})
+        await session_service.create_session(**req)
+        mock_workspace_client.create_workspace.assert_called_once()
+        call_kwargs = mock_workspace_client.create_workspace.call_args[1]
+        assert call_kwargs["workspace_scope"] == "local"
+        assert call_kwargs["local_path"] == "/home/user/project"
+
+    async def test_incompatible_desktop_version(self, session_service: SessionService) -> None:
+        req = make_service_kwargs(
+            client_info={
+                "desktopAppVersion": "0.0.1",
+                "localAgentHostVersion": "1.0.0",
+                "osFamily": "macOS",
+            }
+        )
+        result = await session_service.create_session(**req)
+        assert result["compatibilityStatus"] == "incompatible"
+        assert result.get("policyBundle") is None
+
+    async def test_incompatible_agent_version(self, session_service: SessionService) -> None:
+        req = make_service_kwargs(
+            client_info={
+                "desktopAppVersion": "1.0.0",
+                "localAgentHostVersion": "0.0.1",
+                "osFamily": "macOS",
+            }
+        )
+        result = await session_service.create_session(**req)
+        assert result["compatibilityStatus"] == "incompatible"
+
+    async def test_incompatible_no_capabilities(self, session_service: SessionService) -> None:
+        req = make_service_kwargs(supported_capabilities=[])
+        result = await session_service.create_session(**req)
+        assert result["compatibilityStatus"] == "incompatible"
+
+    async def test_validation_error_missing_tenant(self, session_service: SessionService) -> None:
+        req = make_service_kwargs(tenant_id="")
+        with pytest.raises(ValidationError, match="required"):
+            await session_service.create_session(**req)
+
+    async def test_feature_flags_present(self, session_service: SessionService) -> None:
+        result = await session_service.create_session(**make_service_kwargs())
+        assert "featureFlags" in result
+        assert result["featureFlags"]["approvalUiEnabled"] is False
+
+
+@pytest.mark.unit
+class TestResumeSession:
+    async def test_resume_active_session(self, session_service: SessionService) -> None:
+        create_result = await session_service.create_session(**make_service_kwargs())
+        session_id = create_result["sessionId"]
+
+        result = await session_service.resume_session(session_id)
+        assert result["sessionId"] == session_id
+        assert result["policyBundle"] is not None
+
+    async def test_resume_not_found(self, session_service: SessionService) -> None:
+        with pytest.raises(SessionNotFoundError):
+            await session_service.resume_session("nonexistent")
+
+    async def test_resume_incompatible_session_blocked(
+        self, session_service: SessionService
+    ) -> None:
+        """Resuming a session created with incompatible versions must not bypass the gate."""
+        req = make_service_kwargs(
+            client_info={
+                "desktopAppVersion": "0.0.1",
+                "localAgentHostVersion": "1.0.0",
+                "osFamily": "macOS",
+            }
+        )
+        create_result = await session_service.create_session(**req)
+        assert create_result["compatibilityStatus"] == "incompatible"
+        session_id = create_result["sessionId"]
+
+        with pytest.raises(IncompatibleError):
+            await session_service.resume_session(session_id)
+
+    async def test_resume_cancelled_session_fails(self, session_service: SessionService) -> None:
+        create_result = await session_service.create_session(**make_service_kwargs())
+        session_id = create_result["sessionId"]
+        await session_service.cancel_session(session_id)
+
+        with pytest.raises(ConflictError, match="Cannot resume"):
+            await session_service.resume_session(session_id)
+
+
+@pytest.mark.unit
+class TestCancelSession:
+    async def test_cancel_active_session(self, session_service: SessionService) -> None:
+        create_result = await session_service.create_session(**make_service_kwargs())
+        session_id = create_result["sessionId"]
+
+        await session_service.cancel_session(session_id)
+        result = await session_service.get_session(session_id)
+        assert result["status"] == "SESSION_CANCELLED"
+
+    async def test_cancel_not_found(self, session_service: SessionService) -> None:
+        with pytest.raises(SessionNotFoundError):
+            await session_service.cancel_session("nonexistent")
+
+    async def test_cancel_already_cancelled(self, session_service: SessionService) -> None:
+        create_result = await session_service.create_session(**make_service_kwargs())
+        session_id = create_result["sessionId"]
+        await session_service.cancel_session(session_id)
+
+        with pytest.raises(ConflictError, match="Cannot cancel"):
+            await session_service.cancel_session(session_id)
+
+
+@pytest.mark.unit
+class TestGetSession:
+    async def test_get_session(self, session_service: SessionService) -> None:
+        create_result = await session_service.create_session(**make_service_kwargs())
+        session_id = create_result["sessionId"]
+
+        result = await session_service.get_session(session_id)
+        assert result["sessionId"] == session_id
+        assert result["status"] == "SESSION_RUNNING"
+
+    async def test_get_not_found(self, session_service: SessionService) -> None:
+        with pytest.raises(SessionNotFoundError):
+            await session_service.get_session("nonexistent")
