@@ -23,10 +23,10 @@ typecheck: ## Run type checker
 	mypy src/
 
 test: ## Run unit tests
-	pytest -m "unit or not service" -x -q
+	pytest -m "unit or not (service or integration)" -x -q
 
-test-integration: ## Run service tests (requires DynamoDB Local)
-	pytest -m service -x -q
+test-integration: ## Run service/integration tests (requires LocalStack)
+	pytest -m "service or integration" -x -q
 
 build: ## Build package
 	python -m build

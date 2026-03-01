@@ -65,6 +65,7 @@ asyncio_mode = "auto"
 markers = [
     "unit: Unit tests (no infrastructure)",
     "service: Service tests (DynamoDB Local)",
+    "integration: Integration tests (LocalStack)",
 ]
 
 [tool.coverage.run]
