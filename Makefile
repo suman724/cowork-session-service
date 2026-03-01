@@ -7,7 +7,7 @@ install: ## Install all dependencies
 	pip install -e ".[dev]" -e "../cowork-platform[sdk]"
 
 run: ## Run the service locally with auto-reload
-	uvicorn session_service.main:app --reload --port 8000
+	set -a && [ -f .env ] && . .env; set +a && uvicorn session_service.main:app --reload --port 8000
 
 lint: ## Run linter
 	ruff check src/ tests/
@@ -23,10 +23,10 @@ typecheck: ## Run type checker
 	mypy src/
 
 test: ## Run unit tests
-	pytest -m "unit or not service" -x -q
+	pytest -m "unit or not (service or integration)" -x -q
 
-test-integration: ## Run service tests (requires DynamoDB Local)
-	pytest -m service -x -q
+test-integration: ## Run service/integration tests (requires LocalStack)
+	pytest -m "service or integration" -x -q
 
 build: ## Build package
 	python -m build

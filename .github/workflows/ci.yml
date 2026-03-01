@@ -30,7 +30,7 @@ jobs:
         run: mypy src/
 
       - name: Unit tests
-        run: pytest -m "unit or not service" -x -q
+        run: pytest -m "unit or not (service or integration)" -x -q
 
   build:
     runs-on: ubuntu-latest
