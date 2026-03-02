@@ -15,7 +15,7 @@ Python, FastAPI, PynamoDB/boto3, Pydantic models from `cowork-platform`.
 | Method | Path | Purpose |
 |--------|------|---------|
 | `POST` | `/sessions` | Create session — resolve workspace, fetch policy, return sessionId + policyBundle + featureFlags |
-| `POST` | `/sessions/{sessionId}/resume` | Resume after crash — re-validate policy, return refreshed bundle |
+| `POST` | `/sessions/{sessionId}/resume` | Resume session (after completion, failure, or crash) — re-validate policy, extend expiry, return refreshed bundle |
 | `POST` | `/sessions/{sessionId}/cancel` | Cancel session |
 | `GET` | `/sessions/{sessionId}` | Get session metadata |
 
@@ -62,6 +62,8 @@ Stored: `sessionId`, `tenantId`, `userId`, `workspaceId`, `executionEnvironment`
 ## Session States
 
 `SESSION_CREATED` → `SESSION_RUNNING` ↔ `WAITING_FOR_LLM` / `WAITING_FOR_TOOL` / `WAITING_FOR_APPROVAL` / `SESSION_PAUSED` → `SESSION_COMPLETED` / `SESSION_FAILED` / `SESSION_CANCELLED`
+
+Resumable: `SESSION_COMPLETED` and `SESSION_FAILED` can transition back to `SESSION_RUNNING` via `POST /sessions/{id}/resume`. `SESSION_CANCELLED` is terminal.
 
 ## External Calls
 
