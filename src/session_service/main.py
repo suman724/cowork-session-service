@@ -17,6 +17,7 @@ from session_service.clients.policy_client import PolicyClient
 from session_service.clients.workspace_client import WorkspaceClient
 from session_service.config import Settings
 from session_service.exceptions import ServiceError
+from session_service.middleware import RequestIdMiddleware
 from session_service.repositories.dynamo import DynamoSessionRepository
 from session_service.routes import health, sessions
 from session_service.services.session_service import SessionService
@@ -30,6 +31,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     log_level = logging.getLevelNamesMapping().get(settings.log_level.upper(), logging.INFO)
     structlog.configure(
+        processors=[
+            structlog.contextvars.merge_contextvars,
+            structlog.stdlib.add_log_level,
+            structlog.stdlib.PositionalArgumentsFormatter(),
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.processors.StackInfoRenderer(),
+            structlog.processors.format_exc_info,
+            structlog.processors.JSONRenderer(),
+        ],
         wrapper_class=structlog.make_filtering_bound_logger(log_level),
     )
 
@@ -72,6 +82,8 @@ def create_app() -> FastAPI:
         version="0.1.0",
         lifespan=lifespan,
     )
+
+    app.add_middleware(RequestIdMiddleware)
 
     app.include_router(health.router)
     app.include_router(sessions.router)
