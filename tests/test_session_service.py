@@ -39,6 +39,17 @@ class TestCreateSession:
         assert call_kwargs["workspace_scope"] == "local"
         assert call_kwargs["local_path"] == "/home/user/project"
 
+    async def test_creates_with_workspace_id_hint(
+        self,
+        session_service: SessionService,
+        mock_workspace_client: Any,
+    ) -> None:
+        """When workspaceId is provided, reuse existing workspace (no create_workspace call)."""
+        req = make_service_kwargs(workspace_hint={"workspaceId": "ws-existing"})
+        result = await session_service.create_session(**req)
+        mock_workspace_client.create_workspace.assert_not_called()
+        assert result["workspaceId"] == "ws-existing"
+
     async def test_incompatible_desktop_version(self, session_service: SessionService) -> None:
         req = make_service_kwargs(
             client_info={
@@ -127,6 +138,23 @@ class TestResumeSession:
         # Verify session was marked as failed
         result = await session_service.get_session(session_id)
         assert result["status"] == "SESSION_FAILED"
+
+    async def test_resume_completed_session(
+        self, session_service: SessionService, session_repo: InMemorySessionRepository
+    ) -> None:
+        """Resuming a completed session should succeed (Continue Conversation)."""
+        create_result = await session_service.create_session(**make_service_kwargs())
+        session_id = create_result["sessionId"]
+        await session_repo.update_status(session_id, "SESSION_COMPLETED")
+
+        result = await session_service.resume_session(session_id)
+        assert result["sessionId"] == session_id
+        assert result["workspaceId"] == "ws-1"
+        assert result["policyBundle"] is not None
+
+        # Verify session is back to RUNNING
+        session = await session_service.get_session(session_id)
+        assert session["status"] == "SESSION_RUNNING"
 
     async def test_resume_cancelled_session_fails(self, session_service: SessionService) -> None:
         create_result = await session_service.create_session(**make_service_kwargs())

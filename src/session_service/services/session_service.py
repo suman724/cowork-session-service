@@ -64,25 +64,33 @@ class SessionService:
         )
 
         # Resolve workspace
-        local_path = None
-        workspace_scope = "general"
-        if workspace_hint and workspace_hint.get("localPaths"):
-            local_paths = workspace_hint["localPaths"]
-            if not isinstance(local_paths, list) or not local_paths:
-                raise ValidationError("workspaceHint.localPaths must be a non-empty list")
-            local_path = local_paths[0]
-            workspace_scope = "local"
+        # Priority: explicit workspaceId > localPaths > general (new workspace)
+        workspace_id: str
+        if workspace_hint and workspace_hint.get("workspaceId"):
+            # Reuse an existing workspace (e.g., "Continue Conversation")
+            workspace_id = workspace_hint["workspaceId"]
+        else:
+            local_path = None
+            workspace_scope = "general"
+            if workspace_hint and workspace_hint.get("localPaths"):
+                local_paths = workspace_hint["localPaths"]
+                if not isinstance(local_paths, list) or not local_paths:
+                    raise ValidationError("workspaceHint.localPaths must be a non-empty list")
+                local_path = local_paths[0]
+                workspace_scope = "local"
 
-        ws_result = await self._workspace_client.create_workspace(
-            tenant_id=tenant_id,
-            user_id=user_id,
-            workspace_scope=workspace_scope,
-            local_path=local_path,
-        )
-        try:
-            workspace_id: str = ws_result["workspaceId"]
-        except KeyError as exc:
-            raise DownstreamError("WorkspaceService", "missing workspaceId in response") from exc
+            ws_result = await self._workspace_client.create_workspace(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                workspace_scope=workspace_scope,
+                local_path=local_path,
+            )
+            try:
+                workspace_id = ws_result["workspaceId"]
+            except KeyError as exc:
+                raise DownstreamError(
+                    "WorkspaceService", "missing workspaceId in response"
+                ) from exc
 
         now = datetime.now(UTC)
         expires_at = now + timedelta(hours=self._settings.session_expiry_hours)
@@ -171,7 +179,10 @@ class SessionService:
             capabilities=session.supported_capabilities,
         )
 
+        # Extend expiry on resume so the session doesn't expire mid-task
+        new_expires = datetime.now(UTC) + timedelta(hours=self._settings.session_expiry_hours)
         await self._repo.update_status(session_id, "SESSION_RUNNING")
+        await self._repo.update_expiry(session_id, new_expires)
 
         return {
             "sessionId": session_id,

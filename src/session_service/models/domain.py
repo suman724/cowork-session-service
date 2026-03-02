@@ -51,8 +51,8 @@ VALID_TRANSITIONS: dict[str, set[str]] = {
         "SESSION_FAILED",
         "SESSION_CANCELLED",
     },
-    "SESSION_COMPLETED": set(),
-    "SESSION_FAILED": set(),
+    "SESSION_COMPLETED": {"SESSION_RUNNING"},  # Allow resume
+    "SESSION_FAILED": {"SESSION_RUNNING"},  # Allow resume after failure
     "SESSION_CANCELLED": set(),
 }
 

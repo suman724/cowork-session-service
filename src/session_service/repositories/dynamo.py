@@ -36,6 +36,20 @@ class DynamoSessionRepository:
             ExpressionAttributeValues={":status": status, ":ua": now},
         )
 
+    async def update_expiry(self, session_id: str, expires_at: datetime) -> None:
+        now = datetime.now(UTC).isoformat()
+        ttl = int(expires_at.timestamp())
+        await self._table.update_item(
+            Key={"sessionId": session_id},
+            UpdateExpression="SET expiresAt = :ea, #ttl = :ttl, updatedAt = :ua",
+            ExpressionAttributeNames={"#ttl": "ttl"},
+            ExpressionAttributeValues={
+                ":ea": expires_at.isoformat(),
+                ":ttl": ttl,
+                ":ua": now,
+            },
+        )
+
     async def list_by_tenant_user(self, tenant_id: str, user_id: str) -> list[SessionDomain]:
         resp = await self._table.query(
             IndexName="tenantId-userId-index",

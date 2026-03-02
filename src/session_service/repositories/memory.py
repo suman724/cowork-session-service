@@ -25,6 +25,13 @@ class InMemorySessionRepository:
             session.status = status  # type: ignore[assignment]
             session.updated_at = datetime.now(UTC)
 
+    async def update_expiry(self, session_id: str, expires_at: datetime) -> None:
+        session = self._sessions.get(session_id)
+        if session:
+            session.expires_at = expires_at
+            session.ttl = int(expires_at.timestamp())
+            session.updated_at = datetime.now(UTC)
+
     async def list_by_tenant_user(self, tenant_id: str, user_id: str) -> list[SessionDomain]:
         return [
             s for s in self._sessions.values() if s.tenant_id == tenant_id and s.user_id == user_id
