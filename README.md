@@ -66,6 +66,10 @@ SESSION_CREATED → SESSION_RUNNING → SESSION_COMPLETED
                                   → SESSION_CANCELLED
 SESSION_RUNNING → WAITING_FOR_LLM/TOOL/APPROVAL → SESSION_RUNNING
 SESSION_RUNNING → SESSION_PAUSED → SESSION_RUNNING
+SESSION_COMPLETED → SESSION_RUNNING  (via POST /sessions/{id}/resume)
+SESSION_FAILED    → SESSION_RUNNING  (via POST /sessions/{id}/resume)
 ```
 
-Terminal states: `SESSION_COMPLETED`, `SESSION_FAILED`, `SESSION_CANCELLED`
+Terminal state: `SESSION_CANCELLED`
+
+Resumable states: `SESSION_COMPLETED`, `SESSION_FAILED` — resume transitions back to `SESSION_RUNNING`, refreshes policy bundle, and extends session expiry.

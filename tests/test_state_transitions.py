@@ -43,18 +43,18 @@ class TestStateTransitions:
         session.status = "SESSION_RUNNING"
         assert session.can_transition_to("SESSION_COMPLETED") is True
 
-    def test_completed_is_terminal(self, session: SessionDomain) -> None:
+    def test_completed_can_resume(self, session: SessionDomain) -> None:
         session.status = "SESSION_COMPLETED"
-        assert session.can_transition_to("SESSION_RUNNING") is False
+        assert session.can_transition_to("SESSION_RUNNING") is True
         assert session.can_transition_to("SESSION_CANCELLED") is False
 
     def test_cancelled_is_terminal(self, session: SessionDomain) -> None:
         session.status = "SESSION_CANCELLED"
         assert session.can_transition_to("SESSION_RUNNING") is False
 
-    def test_failed_is_terminal(self, session: SessionDomain) -> None:
+    def test_failed_can_resume(self, session: SessionDomain) -> None:
         session.status = "SESSION_FAILED"
-        assert session.can_transition_to("SESSION_RUNNING") is False
+        assert session.can_transition_to("SESSION_RUNNING") is True
 
     def test_paused_to_running(self, session: SessionDomain) -> None:
         session.status = "SESSION_PAUSED"
