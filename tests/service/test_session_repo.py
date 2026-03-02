@@ -1,6 +1,6 @@
 """Service-tier tests for DynamoDB session repository.
 
-Requires: docker run -p 8000:8000 amazon/dynamodb-local
+Requires: LocalStack (port 4566) or DynamoDB Local (set AWS_ENDPOINT_URL)
 """
 
 from __future__ import annotations

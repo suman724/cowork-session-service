@@ -1,7 +1,8 @@
-"""Fixtures for DynamoDB Local service tests."""
+"""Fixtures for DynamoDB service tests (LocalStack or DynamoDB Local)."""
 
 from __future__ import annotations
 
+import os
 import uuid
 from collections.abc import AsyncIterator
 from typing import Any
@@ -11,8 +12,7 @@ import pytest
 
 from session_service.repositories.dynamo import DynamoSessionRepository
 
-# DynamoDB Local must be running at this endpoint
-DYNAMODB_ENDPOINT = "http://localhost:8000"
+DYNAMODB_ENDPOINT = os.environ.get("AWS_ENDPOINT_URL", "http://localhost:4566")
 
 
 @pytest.fixture
