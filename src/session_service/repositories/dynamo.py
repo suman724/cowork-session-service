@@ -59,6 +59,15 @@ class DynamoSessionRepository:
         )
         return [_from_item(item) for item in resp.get("Items", [])]
 
+    async def update_name(self, session_id: str, name: str, auto_named: bool) -> None:
+        now = datetime.now(UTC).isoformat()
+        await self._table.update_item(
+            Key={"sessionId": session_id},
+            UpdateExpression="SET #n = :name, autoNamed = :an, updatedAt = :ua",
+            ExpressionAttributeNames={"#n": "name"},
+            ExpressionAttributeValues={":name": name, ":an": auto_named, ":ua": now},
+        )
+
     async def delete(self, session_id: str) -> None:
         await self._table.delete_item(Key={"sessionId": session_id})
 
@@ -81,6 +90,8 @@ def _to_item(s: SessionDomain) -> dict[str, Any]:
         item["agentHostVersion"] = s.agent_host_version
     if s.supported_capabilities:
         item["supportedCapabilities"] = s.supported_capabilities
+    item["name"] = s.name
+    item["autoNamed"] = s.auto_named
     if s.ttl is not None:
         item["ttl"] = s.ttl
     return item
@@ -97,6 +108,8 @@ def _from_item(item: dict[str, Any]) -> SessionDomain:
         desktop_app_version=item.get("desktopAppVersion"),
         agent_host_version=item.get("agentHostVersion"),
         supported_capabilities=item.get("supportedCapabilities", []),
+        name=item.get("name", ""),
+        auto_named=item.get("autoNamed", True),
         created_at=datetime.fromisoformat(item["createdAt"]),
         expires_at=datetime.fromisoformat(item["expiresAt"]),
         updated_at=datetime.fromisoformat(item["updatedAt"]) if item.get("updatedAt") else None,

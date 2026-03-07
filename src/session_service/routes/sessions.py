@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends
 from starlette.responses import Response
 
 from session_service.dependencies import get_session_service
-from session_service.models.requests import CreateSessionRequest
+from session_service.models.requests import CreateSessionRequest, UpdateSessionNameRequest
 from session_service.services.session_service import SessionService
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
@@ -44,6 +44,15 @@ async def cancel_session(
 ) -> Response:
     await service.cancel_session(session_id)
     return Response(status_code=204)
+
+
+@router.patch("/{session_id}/name")
+async def update_session_name(
+    session_id: str,
+    body: UpdateSessionNameRequest,
+    service: SessionService = Depends(get_session_service),
+) -> dict[str, Any]:
+    return await service.update_session_name(session_id, body.name, body.auto_named)
 
 
 @router.get("/{session_id}")

@@ -88,6 +88,10 @@ class TestCreateSession:
         assert "featureFlags" in result
         assert result["featureFlags"]["approvalUiEnabled"] is False
 
+    async def test_create_returns_empty_name(self, session_service: SessionService) -> None:
+        result = await session_service.create_session(**make_service_kwargs())
+        assert result["name"] == ""
+
 
 @pytest.mark.unit
 class TestResumeSession:
@@ -197,6 +201,25 @@ class TestGetSession:
         result = await session_service.get_session(session_id)
         assert result["sessionId"] == session_id
         assert result["status"] == "SESSION_RUNNING"
+
+    async def test_get_session_includes_name(self, session_service: SessionService) -> None:
+        create_result = await session_service.create_session(**make_service_kwargs())
+        session_id = create_result["sessionId"]
+
+        result = await session_service.get_session(session_id)
+        assert result["name"] == ""
+        assert result["autoNamed"] is True
+
+    async def test_update_session_name(self, session_service: SessionService) -> None:
+        create_result = await session_service.create_session(**make_service_kwargs())
+        session_id = create_result["sessionId"]
+
+        result = await session_service.update_session_name(session_id, "My Project", False)
+        assert result["name"] == "My Project"
+        assert result["autoNamed"] is False
+
+        get_result = await session_service.get_session(session_id)
+        assert get_result["name"] == "My Project"
 
     async def test_get_not_found(self, session_service: SessionService) -> None:
         with pytest.raises(SessionNotFoundError):

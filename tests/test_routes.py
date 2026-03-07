@@ -61,6 +61,17 @@ class TestSessionRoutes:
         resp = await client.post("/sessions", json=make_create_request(tenantId=""))
         assert resp.status_code == 422
 
+    async def test_patch_session_name(self, client: AsyncClient) -> None:
+        create_resp = await client.post("/sessions", json=make_create_request())
+        session_id = create_resp.json()["sessionId"]
+
+        resp = await client.patch(
+            f"/sessions/{session_id}/name",
+            json={"name": "Test Session", "autoNamed": False},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["name"] == "Test Session"
+
     async def test_get_not_found(self, client: AsyncClient) -> None:
         resp = await client.get("/sessions/nonexistent")
         assert resp.status_code == 404

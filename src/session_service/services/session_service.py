@@ -136,6 +136,7 @@ class SessionService:
             "sessionId": session_id,
             "workspaceId": workspace_id,
             "compatibilityStatus": "compatible" if is_compatible else "incompatible",
+            "name": "",
         }
         if policy_bundle:
             result["policyBundle"] = policy_bundle
@@ -216,6 +217,21 @@ class SessionService:
             "userId": session.user_id,
             "executionEnvironment": session.execution_environment,
             "status": session.status,
+            "name": session.name,
+            "autoNamed": session.auto_named,
             "createdAt": session.created_at.isoformat(),
             "expiresAt": session.expires_at.isoformat(),
         }
+
+    async def update_session_name(
+        self, session_id: str, name: str, auto_named: bool = True
+    ) -> dict[str, Any]:
+        """Update a session's human-readable name."""
+        session = await self._repo.get(session_id)
+        if session is None:
+            raise SessionNotFoundError(session_id)
+
+        await self._repo.update_name(session_id, name, auto_named)
+        logger.info("session_name_updated", session_id=session_id, name=name)
+
+        return {"sessionId": session_id, "name": name, "autoNamed": auto_named}

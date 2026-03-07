@@ -14,11 +14,13 @@ from httpx import ASGITransport, AsyncClient
 from session_service.clients.policy_client import PolicyClient
 from session_service.clients.workspace_client import WorkspaceClient
 from session_service.config import Settings
-from session_service.dependencies import get_session_service
+from session_service.dependencies import get_session_service, get_task_service
 from session_service.exceptions import ServiceError
 from session_service.repositories.memory import InMemorySessionRepository
-from session_service.routes import health, sessions
+from session_service.repositories.memory_task import InMemoryTaskRepository
+from session_service.routes import health, sessions, tasks
 from session_service.services.session_service import SessionService
+from session_service.services.task_service import TaskService
 
 
 def _make_policy_bundle(
@@ -82,6 +84,11 @@ def mock_workspace_client() -> WorkspaceClient:
 
 
 @pytest.fixture
+def task_repo() -> InMemoryTaskRepository:
+    return InMemoryTaskRepository()
+
+
+@pytest.fixture
 def session_service(
     session_repo: InMemorySessionRepository,
     mock_policy_client: PolicyClient,
@@ -92,7 +99,18 @@ def session_service(
 
 
 @pytest.fixture
-async def client(session_service: SessionService) -> AsyncIterator[AsyncClient]:
+def task_service(
+    task_repo: InMemoryTaskRepository,
+    session_repo: InMemorySessionRepository,
+) -> TaskService:
+    return TaskService(task_repo, session_repo)
+
+
+@pytest.fixture
+async def client(
+    session_service: SessionService,
+    task_service: TaskService,
+) -> AsyncIterator[AsyncClient]:
     async def _service_error_handler(request: Request, exc: Exception) -> JSONResponse:
         assert isinstance(exc, ServiceError)
         body: dict[str, Any] = {
@@ -105,9 +123,11 @@ async def client(session_service: SessionService) -> AsyncIterator[AsyncClient]:
     app = FastAPI()
     app.include_router(health.router)
     app.include_router(sessions.router)
+    app.include_router(tasks.router)
     app.add_exception_handler(ServiceError, _service_error_handler)
 
     app.dependency_overrides[get_session_service] = lambda: session_service
+    app.dependency_overrides[get_task_service] = lambda: task_service
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
@@ -126,6 +146,17 @@ def make_create_request(**overrides: Any) -> dict[str, Any]:
             "osFamily": "macOS",
         },
         "supportedCapabilities": ["File.Read", "Shell.Exec"],
+    }
+    base.update(overrides)
+    return base
+
+
+def make_create_task_request(**overrides: Any) -> dict[str, Any]:
+    """Build a standard task create request body (camelCase, for route tests)."""
+    base: dict[str, Any] = {
+        "taskId": "task-1",
+        "prompt": "Write a hello world function",
+        "maxSteps": 50,
     }
     base.update(overrides)
     return base

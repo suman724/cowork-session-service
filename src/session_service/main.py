@@ -19,8 +19,10 @@ from session_service.config import Settings
 from session_service.exceptions import ServiceError
 from session_service.middleware import RequestIdMiddleware
 from session_service.repositories.dynamo import DynamoSessionRepository
-from session_service.routes import health, sessions
+from session_service.repositories.dynamo_task import DynamoTaskRepository
+from session_service.routes import health, sessions, tasks
 from session_service.services.session_service import SessionService
+from session_service.services.task_service import TaskService
 
 logger = structlog.get_logger()
 
@@ -63,10 +65,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         table = await dynamodb.Table(settings.sessions_table)
         repo = DynamoSessionRepository(table)
 
+        tasks_table = await dynamodb.Table(settings.tasks_table)
+        task_repo = DynamoTaskRepository(tasks_table)
+
         policy_client = PolicyClient(policy_http)
         workspace_client = WorkspaceClient(workspace_http)
 
         app.state.session_service = SessionService(repo, policy_client, workspace_client, settings)
+        app.state.task_service = TaskService(task_repo, repo)
 
         logger.info("session_service_started", env=settings.env)
         yield
@@ -87,6 +93,7 @@ def create_app() -> FastAPI:
 
     app.include_router(health.router)
     app.include_router(sessions.router)
+    app.include_router(tasks.router)
 
     app.add_exception_handler(ServiceError, _service_error_handler)
     app.add_exception_handler(Exception, _unhandled_error_handler)
