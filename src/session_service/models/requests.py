@@ -7,6 +7,29 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 
+class CreateTaskRequest(BaseModel):
+    """POST /sessions/{session_id}/tasks request body."""
+
+    task_id: str = Field(alias="taskId", min_length=1)
+    prompt: str = Field(min_length=1)
+    max_steps: int = Field(alias="maxSteps", default=50, ge=1, le=200)
+
+
+class CompleteTaskRequest(BaseModel):
+    """POST /sessions/{session_id}/tasks/{task_id}/complete request body."""
+
+    status: Literal["completed", "failed", "cancelled"] = Field(min_length=1)
+    step_count: int = Field(alias="stepCount", default=0, ge=0)
+    completion_reason: str | None = Field(alias="completionReason", default=None)
+
+
+class UpdateSessionNameRequest(BaseModel):
+    """PATCH /sessions/{session_id}/name request body."""
+
+    name: str = Field(min_length=1, max_length=200)
+    auto_named: bool = Field(alias="autoNamed", default=True)
+
+
 class CreateSessionRequest(BaseModel):
     """POST /sessions request body."""
 

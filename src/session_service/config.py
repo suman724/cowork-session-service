@@ -23,3 +23,7 @@ class Settings(BaseSettings):
     @property
     def sessions_table(self) -> str:
         return f"{self.dynamodb_table_prefix}sessions"
+
+    @property
+    def tasks_table(self) -> str:
+        return f"{self.dynamodb_table_prefix}tasks"

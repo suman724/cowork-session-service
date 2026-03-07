@@ -37,5 +37,12 @@ class InMemorySessionRepository:
             s for s in self._sessions.values() if s.tenant_id == tenant_id and s.user_id == user_id
         ]
 
+    async def update_name(self, session_id: str, name: str, auto_named: bool) -> None:
+        session = self._sessions.get(session_id)
+        if session:
+            session.name = name
+            session.auto_named = auto_named
+            session.updated_at = datetime.now(UTC)
+
     async def delete(self, session_id: str) -> None:
         self._sessions.pop(session_id, None)

@@ -21,6 +21,14 @@ class SessionNotFoundError(ServiceError):
         super().__init__(msg, code="SESSION_NOT_FOUND", status_code=404)
 
 
+class TaskNotFoundError(ServiceError):
+    """Task not found."""
+
+    def __init__(self, task_id: str = "") -> None:
+        msg = f"Task not found: {task_id}" if task_id else "Task not found"
+        super().__init__(msg, code="TASK_NOT_FOUND", status_code=404)
+
+
 class ConflictError(ServiceError):
     """Invalid state transition."""
 
