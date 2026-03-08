@@ -44,5 +44,8 @@ class InMemorySessionRepository:
             session.auto_named = auto_named
             session.updated_at = datetime.now(UTC)
 
+    async def list_by_team(self, team_id: str) -> list[SessionDomain]:
+        return [s for s in self._sessions.values() if s.team_id == team_id]
+
     async def delete(self, session_id: str) -> None:
         self._sessions.pop(session_id, None)

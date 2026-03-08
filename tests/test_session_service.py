@@ -224,3 +224,77 @@ class TestGetSession:
     async def test_get_not_found(self, session_service: SessionService) -> None:
         with pytest.raises(SessionNotFoundError):
             await session_service.get_session("nonexistent")
+
+    async def test_get_session_includes_session_type(self, session_service: SessionService) -> None:
+        create_result = await session_service.create_session(**make_service_kwargs())
+        session_id = create_result["sessionId"]
+        result = await session_service.get_session(session_id)
+        assert result["sessionType"] == "solo"
+
+
+@pytest.mark.unit
+class TestTeamSessionFields:
+    async def test_create_lead_session(self, session_service: SessionService) -> None:
+        result = await session_service.create_session(
+            **make_service_kwargs(),
+            session_type="lead",
+            team_id="team-abc",
+        )
+        session_id = result["sessionId"]
+        session = await session_service.get_session(session_id)
+        assert session["sessionType"] == "lead"
+        assert session["teamId"] == "team-abc"
+
+    async def test_create_teammate_session(self, session_service: SessionService) -> None:
+        # Create lead first
+        lead_result = await session_service.create_session(
+            **make_service_kwargs(),
+            session_type="lead",
+            team_id="team-abc",
+        )
+        lead_id = lead_result["sessionId"]
+
+        # Create teammate referencing lead
+        result = await session_service.create_session(
+            **make_service_kwargs(),
+            session_type="teammate",
+            team_id="team-abc",
+            parent_session_id=lead_id,
+        )
+        session_id = result["sessionId"]
+        session = await session_service.get_session(session_id)
+        assert session["sessionType"] == "teammate"
+        assert session["teamId"] == "team-abc"
+        assert session["parentSessionId"] == lead_id
+
+    async def test_solo_session_omits_team_fields(self, session_service: SessionService) -> None:
+        result = await session_service.create_session(**make_service_kwargs())
+        session_id = result["sessionId"]
+        session = await session_service.get_session(session_id)
+        assert session["sessionType"] == "solo"
+        assert "teamId" not in session
+        assert "parentSessionId" not in session
+
+    async def test_list_by_team(
+        self,
+        session_service: SessionService,
+        session_repo: InMemorySessionRepository,
+    ) -> None:
+        # Create two sessions in the same team
+        r1 = await session_service.create_session(
+            **make_service_kwargs(), session_type="lead", team_id="team-xyz"
+        )
+        r2 = await session_service.create_session(
+            **make_service_kwargs(),
+            session_type="teammate",
+            team_id="team-xyz",
+            parent_session_id=r1["sessionId"],
+        )
+        # Create one solo session (different team)
+        await session_service.create_session(**make_service_kwargs())
+
+        team_sessions = await session_repo.list_by_team("team-xyz")
+        assert len(team_sessions) == 2
+        ids = {s.session_id for s in team_sessions}
+        assert r1["sessionId"] in ids
+        assert r2["sessionId"] in ids

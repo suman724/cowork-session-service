@@ -71,6 +71,14 @@ class DynamoSessionRepository:
     async def delete(self, session_id: str) -> None:
         await self._table.delete_item(Key={"sessionId": session_id})
 
+    async def list_by_team(self, team_id: str) -> list[SessionDomain]:
+        resp = await self._table.query(
+            IndexName="teamId-index",
+            KeyConditionExpression="teamId = :tid",
+            ExpressionAttributeValues={":tid": team_id},
+        )
+        return [_from_item(item) for item in resp.get("Items", [])]
+
 
 def _to_item(s: SessionDomain) -> dict[str, Any]:
     item: dict[str, Any] = {
@@ -80,10 +88,15 @@ def _to_item(s: SessionDomain) -> dict[str, Any]:
         "userId": s.user_id,
         "executionEnvironment": s.execution_environment,
         "status": s.status,
+        "sessionType": s.session_type,
         "createdAt": s.created_at.isoformat(),
         "expiresAt": s.expires_at.isoformat(),
         "updatedAt": (s.updated_at or s.created_at).isoformat(),
     }
+    if s.team_id:
+        item["teamId"] = s.team_id
+    if s.parent_session_id:
+        item["parentSessionId"] = s.parent_session_id
     if s.desktop_app_version:
         item["desktopAppVersion"] = s.desktop_app_version
     if s.agent_host_version:
@@ -105,6 +118,9 @@ def _from_item(item: dict[str, Any]) -> SessionDomain:
         user_id=item["userId"],
         execution_environment=item["executionEnvironment"],
         status=item["status"],
+        session_type=item.get("sessionType", "solo"),
+        team_id=item.get("teamId"),
+        parent_session_id=item.get("parentSessionId"),
         desktop_app_version=item.get("desktopAppVersion"),
         agent_host_version=item.get("agentHostVersion"),
         supported_capabilities=item.get("supportedCapabilities", []),

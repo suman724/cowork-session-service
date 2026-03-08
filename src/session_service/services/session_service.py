@@ -47,6 +47,9 @@ class SessionService:
         workspace_hint: dict[str, Any] | None = None,
         client_info: dict[str, Any],
         supported_capabilities: list[str],
+        session_type: str = "solo",
+        team_id: str | None = None,
+        parent_session_id: str | None = None,
     ) -> dict[str, Any]:
         """Create a new session — the handshake endpoint."""
         if not tenant_id.strip() or not user_id.strip():
@@ -116,6 +119,9 @@ class SessionService:
             user_id=user_id,
             execution_environment=execution_environment,
             status=initial_status,
+            session_type=session_type,
+            team_id=team_id,
+            parent_session_id=parent_session_id,
             desktop_app_version=desktop_version,
             agent_host_version=agent_version,
             supported_capabilities=supported_capabilities,
@@ -210,18 +216,24 @@ class SessionService:
         if session is None:
             raise SessionNotFoundError(session_id)
 
-        return {
+        result: dict[str, Any] = {
             "sessionId": session.session_id,
             "workspaceId": session.workspace_id,
             "tenantId": session.tenant_id,
             "userId": session.user_id,
             "executionEnvironment": session.execution_environment,
             "status": session.status,
+            "sessionType": session.session_type,
             "name": session.name,
             "autoNamed": session.auto_named,
             "createdAt": session.created_at.isoformat(),
             "expiresAt": session.expires_at.isoformat(),
         }
+        if session.team_id:
+            result["teamId"] = session.team_id
+        if session.parent_session_id:
+            result["parentSessionId"] = session.parent_session_id
+        return result
 
     async def update_session_name(
         self, session_id: str, name: str, auto_named: bool = True
