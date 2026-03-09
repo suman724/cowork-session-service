@@ -57,6 +57,9 @@ VALID_TRANSITIONS: dict[str, set[str]] = {
 }
 
 
+SessionType = Literal["lead", "teammate", "solo"]
+
+
 class SessionDomain(BaseModel):
     """Internal session representation."""
 
@@ -66,6 +69,9 @@ class SessionDomain(BaseModel):
     user_id: str
     execution_environment: Literal["desktop", "cloud_sandbox"]
     status: SessionState
+    session_type: SessionType = "solo"
+    team_id: str | None = None
+    parent_session_id: str | None = None
     desktop_app_version: str | None = None
     agent_host_version: str | None = None
     supported_capabilities: list[str] = []

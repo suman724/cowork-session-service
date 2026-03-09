@@ -41,3 +41,6 @@ class CreateSessionRequest(BaseModel):
     workspace_hint: dict[str, Any] | None = Field(alias="workspaceHint", default=None)
     client_info: dict[str, Any] = Field(alias="clientInfo", default_factory=dict)
     supported_capabilities: list[str] = Field(alias="supportedCapabilities", default_factory=list)
+    session_type: Literal["lead", "teammate", "solo"] = Field(alias="sessionType", default="solo")
+    team_id: str | None = Field(alias="teamId", default=None)
+    parent_session_id: str | None = Field(alias="parentSessionId", default=None)

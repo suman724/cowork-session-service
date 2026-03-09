@@ -56,8 +56,15 @@ SessionService
 | GSI | PK | SK | Use |
 |-----|----|----|-----|
 | `tenantId-userId-index` | `tenantId` | `createdAt` | List sessions for a user |
+| `teamId-index` | `teamId` | — | List sessions in a team |
 
-Stored: `sessionId`, `tenantId`, `userId`, `workspaceId`, `executionEnvironment`, `status`, `createdAt`, `expiresAt`, `ttl`, `clientInfo`
+Stored: `sessionId`, `tenantId`, `userId`, `workspaceId`, `executionEnvironment`, `status`, `sessionType`, `teamId`, `parentSessionId`, `createdAt`, `expiresAt`, `ttl`, `clientInfo`
+
+### Team Session Fields
+
+- `sessionType`: `"solo"` (default), `"lead"`, or `"teammate"` — indicates the session's role in a team
+- `teamId`: Links all sessions in a team (lead + teammates share the same teamId)
+- `parentSessionId`: For teammate sessions, references the lead session that spawned them
 
 ## Session States
 

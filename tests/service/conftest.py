@@ -34,6 +34,7 @@ async def dynamo_table() -> AsyncIterator[Any]:
                 {"AttributeName": "sessionId", "AttributeType": "S"},
                 {"AttributeName": "tenantId", "AttributeType": "S"},
                 {"AttributeName": "createdAt", "AttributeType": "S"},
+                {"AttributeName": "teamId", "AttributeType": "S"},
             ],
             GlobalSecondaryIndexes=[
                 {
@@ -41,6 +42,13 @@ async def dynamo_table() -> AsyncIterator[Any]:
                     "KeySchema": [
                         {"AttributeName": "tenantId", "KeyType": "HASH"},
                         {"AttributeName": "createdAt", "KeyType": "RANGE"},
+                    ],
+                    "Projection": {"ProjectionType": "ALL"},
+                },
+                {
+                    "IndexName": "teamId-index",
+                    "KeySchema": [
+                        {"AttributeName": "teamId", "KeyType": "HASH"},
                     ],
                     "Projection": {"ProjectionType": "ALL"},
                 },

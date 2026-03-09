@@ -26,6 +26,9 @@ async def create_session(
         workspace_hint=body.workspace_hint,
         client_info=body.client_info,
         supported_capabilities=body.supported_capabilities,
+        session_type=body.session_type,
+        team_id=body.team_id,
+        parent_session_id=body.parent_session_id,
     )
 
 
