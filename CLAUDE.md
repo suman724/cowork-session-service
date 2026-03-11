@@ -107,6 +107,20 @@ Error mapping: sandbox unreachable → 503, session not found → 404, inactive 
 
 Key config: `PROXY_ENDPOINT_CACHE_TTL_SECONDS` (30), `PROXY_ACTIVITY_BATCH_SECONDS` (60), `PROXY_TIMEOUT_SECONDS` (30), `PROXY_SSE_TIMEOUT_SECONDS` (14400).
 
+## Sandbox Lifecycle Manager
+
+`SandboxLifecycleManager` runs as a background `asyncio.Task` started in lifespan (only when `sandbox_service` is configured). Periodically checks all active sandbox sessions for:
+
+1. **Provisioning timeout**: `SANDBOX_PROVISIONING` sessions older than `SANDBOX_PROVISION_TIMEOUT_SECONDS` (default 180) → transition to `SESSION_FAILED`
+2. **Max duration**: Active sandbox sessions older than `SANDBOX_MAX_DURATION_SECONDS` (default 14400 / 4h) → terminate via `SandboxService`
+3. **Idle timeout**: Sessions with no `lastActivityAt` update within `SANDBOX_IDLE_TIMEOUT_SECONDS` (default 1800 / 30m) AND no running tasks → terminate via `SandboxService`
+
+Key design:
+- Uses `conditional_update_status()` (DynamoDB ConditionExpression) to prevent double-termination when multiple service instances run concurrently
+- Per-session error handling — one failed session doesn't block others
+- `terminate_sandbox()` is best-effort — failure is logged but doesn't crash the loop
+- Check interval: `SANDBOX_LIFECYCLE_CHECK_INTERVAL_SECONDS` (default 300 / 5m)
+
 ## External Calls
 
 - Policy Service: `GET /policy-bundles?tenantId=...&userId=...&sessionId=...&capabilities=...`
@@ -151,6 +165,7 @@ cowork-session-service/
         compatibility.py      # Version/capability compatibility checks
         sandbox_launcher.py   # SandboxLauncher protocol + LaunchResult
         sandbox_service.py    # Sandbox provisioning and termination orchestration
+        sandbox_lifecycle.py  # Background lifecycle manager (idle/provisioning/max-duration)
         proxy_service.py      # Endpoint caching, ownership validation, activity tracking
       repositories/
         __init__.py

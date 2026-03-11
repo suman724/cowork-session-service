@@ -130,6 +130,44 @@ class DynamoSessionRepository:
             },
         )
 
+    async def list_sandbox_sessions_by_status(self, statuses: set[str]) -> list[SessionDomain]:
+        status_list = sorted(statuses)
+        names = {f"#s{i}": f"s{i}" for i in range(len(status_list))}
+        values = {f":s{i}": s for i, s in enumerate(status_list)}
+        values[":env"] = "cloud_sandbox"
+        status_expr = ", ".join(f":s{i}" for i in range(len(status_list)))
+        filter_expr = f"executionEnvironment = :env AND #status IN ({status_expr})"
+        # Use a reserved-word alias for status
+        attr_names = {"#status": "status"}
+        # DynamoDB IN expression uses a single attribute name
+        resp = await self._table.scan(
+            FilterExpression=filter_expr,
+            ExpressionAttributeNames=attr_names,
+            ExpressionAttributeValues=values,
+        )
+        _ = names  # intentionally unused — status_expr uses :s{i} values directly
+        return [_from_item(item) for item in resp.get("Items", [])]
+
+    async def conditional_update_status(
+        self, session_id: str, new_status: str, expected_status: str
+    ) -> bool:
+        now = datetime.now(UTC).isoformat()
+        try:
+            await self._table.update_item(
+                Key={"sessionId": session_id},
+                UpdateExpression="SET #s = :new_status, updatedAt = :ua",
+                ConditionExpression="#s = :expected",
+                ExpressionAttributeNames={"#s": "status"},
+                ExpressionAttributeValues={
+                    ":new_status": new_status,
+                    ":expected": expected_status,
+                    ":ua": now,
+                },
+            )
+        except self._table.meta.client.exceptions.ConditionalCheckFailedException:
+            return False
+        return True
+
     async def delete(self, session_id: str) -> None:
         await self._table.delete_item(Key={"sessionId": session_id})
 

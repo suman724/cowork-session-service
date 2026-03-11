@@ -15,6 +15,11 @@ Session lifecycle service for the cowork platform. Entry point for all agent ses
 | POST | `/sessions/{id}/tasks/{taskId}/complete` | Mark task as completed/failed/cancelled |
 | GET | `/sessions/{id}/tasks` | List tasks for a session |
 | GET | `/sessions/{id}/tasks/{taskId}` | Get task details |
+| POST | `/sessions/{id}/rpc` | Proxy: forward JSON-RPC to sandbox |
+| GET | `/sessions/{id}/events` | Proxy: SSE stream from sandbox |
+| POST | `/sessions/{id}/upload` | Proxy: file upload to sandbox |
+| GET | `/sessions/{id}/files/{path}` | Proxy: download file from sandbox |
+| GET | `/sessions/{id}/files` | Proxy: list/archive sandbox files |
 | GET | `/health` | Liveness check |
 | GET | `/ready` | Readiness check |
 
@@ -54,6 +59,12 @@ Environment variables (see `.env.example`):
 | `MIN_DESKTOP_APP_VERSION` | `0.1.0` | Minimum Desktop App version |
 | `MIN_AGENT_HOST_VERSION` | `0.1.0` | Minimum Agent Host version |
 | `SESSION_EXPIRY_HOURS` | `24` | Hours until session expires |
+| `SANDBOX_LAUNCHER_TYPE` | `ecs` | Sandbox launcher: `ecs` (production) or `local` (development) |
+| `SANDBOX_MAX_CONCURRENT_SESSIONS` | `5` | Max active sandboxes per user |
+| `SANDBOX_IDLE_TIMEOUT_SECONDS` | `1800` | Terminate idle sandbox after this many seconds |
+| `SANDBOX_MAX_DURATION_SECONDS` | `14400` | Max sandbox session duration (absolute) |
+| `SANDBOX_PROVISION_TIMEOUT_SECONDS` | `180` | Fail provisioning sessions after this long |
+| `SANDBOX_LIFECYCLE_CHECK_INTERVAL_SECONDS` | `300` | How often to check sandbox lifecycles |
 
 ## Session Handshake Flow
 

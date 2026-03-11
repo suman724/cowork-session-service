@@ -30,6 +30,12 @@ class Settings(BaseSettings):
     # Local launcher settings (for development)
     agent_runtime_path: str = "../cowork-agent-runtime"
     session_service_url: str = "http://localhost:8000"
+    # Sandbox lifecycle settings
+    sandbox_idle_timeout_seconds: int = 1800  # 30 minutes
+    sandbox_max_duration_seconds: int = 14400  # 4 hours
+    sandbox_provision_timeout_seconds: int = 180  # 3 minutes
+    sandbox_lifecycle_check_interval_seconds: int = 300  # 5 minutes
+
     # Proxy settings
     proxy_endpoint_cache_ttl_seconds: int = 30
     proxy_activity_batch_seconds: int = 60

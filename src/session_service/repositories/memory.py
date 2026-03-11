@@ -74,5 +74,22 @@ class InMemorySessionRepository:
             session.last_activity_at = last_activity_at
             session.updated_at = datetime.now(UTC)
 
+    async def list_sandbox_sessions_by_status(self, statuses: set[str]) -> list[SessionDomain]:
+        return [
+            s
+            for s in self._sessions.values()
+            if s.execution_environment == "cloud_sandbox" and s.status in statuses
+        ]
+
+    async def conditional_update_status(
+        self, session_id: str, new_status: str, expected_status: str
+    ) -> bool:
+        session = self._sessions.get(session_id)
+        if session and session.status == expected_status:
+            session.status = new_status  # type: ignore[assignment]
+            session.updated_at = datetime.now(UTC)
+            return True
+        return False
+
     async def delete(self, session_id: str) -> None:
         self._sessions.pop(session_id, None)

@@ -22,6 +22,7 @@ from session_service.repositories.dynamo import DynamoSessionRepository
 from session_service.repositories.dynamo_task import DynamoTaskRepository
 from session_service.routes import health, proxy, sandbox, sessions, tasks
 from session_service.services.proxy_service import ProxyService
+from session_service.services.sandbox_lifecycle import SandboxLifecycleManager
 from session_service.services.sandbox_service import SandboxService
 from session_service.services.session_service import SessionService
 from session_service.services.task_service import TaskService
@@ -111,6 +112,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.proxy_http = proxy_http
         app.state.proxy_sse_timeout = settings.proxy_sse_timeout_seconds
 
+        # Start sandbox lifecycle manager (idle/provisioning/max-duration checks)
+        lifecycle_manager: SandboxLifecycleManager | None = None
+        if sandbox_service is not None:
+            lifecycle_manager = SandboxLifecycleManager(repo, task_repo, sandbox_service, settings)
+            await lifecycle_manager.start()
+
         logger.info(
             "session_service_started",
             env=settings.env,
@@ -118,6 +125,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
         yield
 
+        if lifecycle_manager is not None:
+            await lifecycle_manager.stop()
         await proxy_http.aclose()
         await policy_http.aclose()
         await workspace_http.aclose()
