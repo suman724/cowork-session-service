@@ -7,6 +7,7 @@ import os
 import socket
 import subprocess
 import sys
+import tempfile
 from typing import Any
 
 import structlog
@@ -41,6 +42,9 @@ class LocalSandboxLauncher:
         port = _find_free_port()
         endpoint = f"http://localhost:{port}"
 
+        workspace_dir = os.path.join(tempfile.gettempdir(), "cowork-sandbox", session_id)
+        os.makedirs(workspace_dir, exist_ok=True)
+
         cmd = [
             sys.executable,
             "-m",
@@ -49,6 +53,8 @@ class LocalSandboxLauncher:
             "http",
             "--port",
             str(port),
+            "--workspace-dir",
+            workspace_dir,
         ]
 
         proc_env = os.environ.copy()
