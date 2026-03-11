@@ -5,13 +5,16 @@ Test the full web sandbox lifecycle end-to-end.
 Scenarios:
   1. Full lifecycle: create → provision → ready → proxy RPC → SSE events → cancel
   2. SSE reconnect: disconnect mid-stream, reconnect with Last-Event-ID, verify replay
-  3. File upload/download through proxy
-  4. Workspace preseed sync: upload to S3 before sandbox starts, verify sync on startup
-  5. Idle timeout: sandbox terminated after inactivity
-  6. Provisioning timeout: sandbox never registers → SESSION_FAILED
-  7. Session not found: GET non-existent session → 404
-  8. Proxy inactive session: RPC to cancelled session → 409
-  9. Invalid registration token: register with wrong token → 409
+  3. Unified file upload/download: upload via Session Service → S3 + sandbox sync → download → verify
+  4. Workspace preseed sync: upload via unified endpoint during provisioning → S3 persist, no sync → verify sync after ready
+  5. Upload to terminated session: create → ready → cancel → upload → verify 409
+  6. Upload persistence after termination: upload → terminate → verify file still in S3
+  7. Upload sync failure still persists: kill sandbox → upload → persisted=true, sandboxSynced=false → verify in S3
+  8. Idle timeout: sandbox terminated after inactivity
+  9. Provisioning timeout: sandbox never registers → SESSION_FAILED
+  10. Session not found: GET non-existent session → 404
+  11. Proxy inactive session: RPC to cancelled session → 409
+  12. Invalid registration token: register with wrong token → 409
 
 Requires:
   - Session Service running on :8000 with SANDBOX_LAUNCHER_TYPE=local
@@ -155,6 +158,73 @@ def cancel_session(client: httpx.Client, session_id: str) -> None:
             f"{SESSION_SERVICE_URL}/sessions/{session_id}/cancel",
             timeout=10,
         )
+
+
+def create_sandbox_with_workspace(client: httpx.Client) -> tuple[str, str, dict]:
+    """Create sandbox session and extract workspaceId. Returns (session_id, workspace_id, data)."""
+    data = create_sandbox_session(client)
+    session_id = data["sessionId"]
+    workspace_id = data.get("workspaceId")
+    if not workspace_id:
+        raise TestFailureError("Session response missing workspaceId")
+    return session_id, workspace_id, data
+
+
+def upload_file(
+    client: httpx.Client,
+    session_id: str,
+    path: str,
+    content: bytes,
+    content_type: str = "text/plain",
+    *,
+    retries: int = 3,
+) -> tuple[httpx.Response, dict]:
+    """Upload via POST /sessions/{id}/upload with 503 retry. Returns (response, parsed JSON)."""
+    resp = None
+    for attempt in range(retries):
+        resp = client.post(
+            f"{SESSION_SERVICE_URL}/sessions/{session_id}/upload",
+            params={"path": path},
+            files={"file": (path, content, content_type)},
+            headers={"X-User-Id": USER_ID},
+            timeout=30,
+        )
+        if resp.status_code != 503 or attempt == retries - 1:
+            break
+        print(f"    Upload got 503, retrying ({attempt + 1}/{retries})...")
+        time.sleep(2)
+    assert resp is not None
+    if resp.status_code >= 400:
+        raise TestFailureError(f"Upload returned {resp.status_code}: {resp.text[:300]}")
+    return resp, resp.json()
+
+
+def _extract_workspace_paths(ws_files: list) -> set[str]:
+    """Extract file paths from Workspace Service file listing response."""
+    return {f.get("path", f) if isinstance(f, dict) else str(f) for f in ws_files}
+
+
+def verify_files_in_workspace(
+    client: httpx.Client,
+    workspace_id: str,
+    expected_paths: set[str],
+) -> set[str]:
+    """Verify files exist in Workspace Service S3. Returns all paths found."""
+    resp = client.get(
+        f"{WORKSPACE_SERVICE_URL}/workspaces/{workspace_id}/files",
+        timeout=10,
+    )
+    if resp.status_code >= 400:
+        raise TestFailureError(
+            f"Workspace file list failed: {resp.status_code}: {resp.text[:300]}"
+        )
+    ws_paths = _extract_workspace_paths(resp.json())
+    missing = expected_paths - ws_paths
+    if missing:
+        raise TestFailureError(
+            f"Files not in Workspace Service: {missing} (found: {ws_paths})"
+        )
+    return ws_paths
 
 
 def collect_sse_in_thread(
@@ -413,39 +483,40 @@ def test_sse_reconnect():
 
 
 def test_file_upload_download():
-    """File upload/download through proxy: upload → download → verify content."""
+    """Unified file upload/download: upload via Session Service → S3 + sandbox sync → download.
+
+    Verifies:
+      - Upload via POST /sessions/{id}/upload?path=X returns persisted=true, sandboxSynced=true
+      - Download via GET /sessions/{id}/files/X returns matching content
+      - File exists in Workspace Service S3 independently
+    """
     client = httpx.Client()
     session_id = None
     try:
-        data = create_sandbox_session(client)
-        session_id = data["sessionId"]
+        session_id, workspace_id, _data = create_sandbox_with_workspace(client)
         poll_session_status(client, session_id, {"SANDBOX_READY", "SESSION_RUNNING"})
 
-        # Give sandbox HTTP server a moment to be fully ready
-        time.sleep(2)
-
         test_content = b"Hello from test_file_upload_download!\nLine 2.\n"
-        test_filename = "test-upload.txt"
+        test_path = "test-upload.txt"
 
-        # Upload file (retry on 503 — sandbox may still be starting HTTP server)
-        for attempt in range(3):
-            resp = client.post(
-                f"{SESSION_SERVICE_URL}/sessions/{session_id}/upload",
-                files={"file": (test_filename, test_content, "text/plain")},
-                headers={"X-User-Id": USER_ID},
-                timeout=30,
+        # Upload file via unified endpoint (retry on 503 — sandbox may still be starting)
+        _resp, upload_result = upload_file(client, session_id, test_path, test_content)
+        print(f"    Upload result: {upload_result}")
+
+        # Verify upload result fields
+        if not upload_result.get("persisted"):
+            raise TestFailureError(f"Expected persisted=true, got {upload_result}")
+        if not upload_result.get("sandboxSynced"):
+            raise TestFailureError(f"Expected sandboxSynced=true, got {upload_result}")
+        if upload_result.get("path") != test_path:
+            raise TestFailureError(
+                f"Expected path={test_path!r}, got {upload_result.get('path')!r}"
             )
-            if resp.status_code != 503 or attempt == 2:
-                break
-            print(f"    Upload got 503, retrying ({attempt + 1}/3)...")
-            time.sleep(2)
-        if resp.status_code >= 400:
-            raise TestFailureError(f"Upload returned {resp.status_code}: {resp.text[:300]}")
-        print(f"    Upload response: {resp.status_code}")
+        print("    Upload result: persisted=true, sandboxSynced=true")
 
-        # Download file
+        # Download file via sandbox proxy
         resp = client.get(
-            f"{SESSION_SERVICE_URL}/sessions/{session_id}/files/{test_filename}",
+            f"{SESSION_SERVICE_URL}/sessions/{session_id}/files/{test_path}",
             headers={"X-User-Id": USER_ID},
             timeout=30,
         )
@@ -458,27 +529,11 @@ def test_file_upload_download():
             raise TestFailureError(
                 f"Content mismatch!\n  Uploaded: {test_content!r}\n  Downloaded: {downloaded!r}"
             )
-        print("    Content integrity verified")
+        print("    Content integrity verified via sandbox proxy")
 
-        # List files
-        resp = client.get(
-            f"{SESSION_SERVICE_URL}/sessions/{session_id}/files",
-            headers={"X-User-Id": USER_ID},
-            timeout=30,
-        )
-        if resp.status_code >= 400:
-            raise TestFailureError(f"File list returned {resp.status_code}: {resp.text[:300]}")
-        file_list = resp.json()
-        print(f"    File listing: {file_list}")
-
-        # Verify our file appears in the listing
-        if isinstance(file_list, list):
-            filenames = [f.get("name", f) if isinstance(f, dict) else str(f) for f in file_list]
-            if test_filename not in filenames:
-                raise TestFailureError(
-                    f"Uploaded file '{test_filename}' not in listing: {filenames}"
-                )
-            print(f"    File '{test_filename}' found in listing")
+        # Verify file exists in Workspace Service S3 independently
+        verify_files_in_workspace(client, workspace_id, {test_path})
+        print(f"    File '{test_path}' verified in Workspace Service S3")
 
     finally:
         if session_id:
@@ -487,58 +542,56 @@ def test_file_upload_download():
 
 
 def test_workspace_preseed_sync():
-    """Upload files to Workspace Service (S3) before sandbox starts, verify they sync on startup.
+    """Upload files via unified endpoint during SANDBOX_PROVISIONING, verify sync after ready.
 
     Flow:
-      1. Create session → get sessionId + workspaceId (SANDBOX_PROVISIONING)
-      2. Upload files directly to Workspace Service using workspaceId
-      3. Wait for sandbox to be ready (agent-runtime downloads workspace files on startup)
-      4. Download files through Session Service proxy and verify content matches
+      1. Create session → SANDBOX_PROVISIONING
+      2. Upload files via POST /sessions/{id}/upload (unified endpoint)
+      3. Verify response: persisted=true, sandboxSynced=false (sandbox not ready yet)
+      4. Wait for sandbox to be ready (it will download workspace files on startup)
+      5. Download files through proxy and verify content matches
     """
     client = httpx.Client()
     session_id = None
     try:
         # Step 1: Create sandbox session
-        data = create_sandbox_session(client)
-        session_id = data["sessionId"]
-        workspace_id = data.get("workspaceId")
-        if not workspace_id:
-            raise TestFailureError("Session response missing workspaceId")
+        session_id, workspace_id, data = create_sandbox_with_workspace(client)
         print(f"    workspaceId: {workspace_id[:12]}...")
 
-        # Step 2: Upload files to Workspace Service (S3) while sandbox is provisioning
+        # Verify we're in provisioning state
+        status = data.get("status")
+        if status != "SANDBOX_PROVISIONING":
+            raise TestFailureError(
+                f"Expected SANDBOX_PROVISIONING for preseed test, got {status}"
+            )
+
+        # Step 2: Upload files via unified endpoint while sandbox is provisioning
         test_files = {
-            "preseed-readme.txt": b"This file was pre-seeded via Workspace Service.\n",
+            "preseed-readme.txt": b"This file was pre-seeded via unified upload.\n",
             "data/config.json": b'{"setting": "value", "count": 42}\n',
         }
         for file_path, content in test_files.items():
-            resp = client.post(
-                f"{WORKSPACE_SERVICE_URL}/workspaces/{workspace_id}/files",
-                params={"path": file_path},
-                files={"file": (file_path.split("/")[-1], content, "application/octet-stream")},
-                timeout=30,
+            _resp, upload_result = upload_file(
+                client, session_id, file_path, content,
+                content_type="application/octet-stream", retries=1,
             )
-            if resp.status_code >= 400:
+            print(f"    Uploaded: {file_path} ({len(content)} bytes) → {upload_result}")
+
+            # Step 3: Verify persisted=true, sandboxSynced=false
+            if not upload_result.get("persisted"):
+                raise TestFailureError(f"Expected persisted=true for '{file_path}'")
+            if upload_result.get("sandboxSynced"):
                 raise TestFailureError(
-                    f"Workspace upload of '{file_path}' failed: "
-                    f"{resp.status_code}: {resp.text[:300]}"
+                    f"Expected sandboxSynced=false during provisioning for '{file_path}'"
                 )
-            print(f"    Uploaded to S3: {file_path} ({len(content)} bytes)")
 
-        # Verify files are in Workspace Service
-        resp = client.get(
-            f"{WORKSPACE_SERVICE_URL}/workspaces/{workspace_id}/files",
-            timeout=10,
-        )
-        if resp.status_code >= 400:
-            raise TestFailureError(
-                f"Workspace file list failed: {resp.status_code}: {resp.text[:300]}"
-            )
-        ws_files = resp.json()
-        ws_paths = {f.get("path", f) if isinstance(f, dict) else str(f) for f in ws_files}
-        print(f"    Workspace Service files: {ws_paths}")
+        print("    All files persisted to S3 with sandboxSynced=false")
 
-        # Step 3: Wait for sandbox to be ready (it will download files during startup)
+        # Verify files are in Workspace Service S3
+        ws_paths = verify_files_in_workspace(client, workspace_id, set(test_files.keys()))
+        print(f"    Verified in Workspace Service S3: {ws_paths}")
+
+        # Step 4: Wait for sandbox to be ready (it will download files during startup)
         print("    Waiting for SANDBOX_READY (sandbox will sync workspace files)...")
         poll_session_status(client, session_id, {"SANDBOX_READY", "SESSION_RUNNING"})
         print("    Sandbox is ready")
@@ -546,7 +599,7 @@ def test_workspace_preseed_sync():
         # Give sandbox a moment to finish any remaining file I/O
         time.sleep(1)
 
-        # Step 4: Verify files are available through sandbox proxy
+        # Step 5: Verify files are available through sandbox proxy
         for file_path, expected_content in test_files.items():
             for attempt in range(3):
                 resp = client.get(
@@ -572,7 +625,151 @@ def test_workspace_preseed_sync():
                 )
             print(f"    Verified via proxy: {file_path} — content matches")
 
-        print("    Workspace preseed sync works correctly")
+        print("    Workspace preseed sync via unified upload works correctly")
+
+    finally:
+        if session_id:
+            cancel_session(client, session_id)
+        client.close()
+
+
+def test_upload_to_terminated_session():
+    """Upload to a terminated session returns 409.
+
+    Flow:
+      1. Create session, wait for ready
+      2. Cancel session
+      3. Attempt upload → verify 409
+    """
+    client = httpx.Client()
+    session_id = None
+    try:
+        session_id, _workspace_id, _data = create_sandbox_with_workspace(client)
+        poll_session_status(client, session_id, {"SANDBOX_READY", "SESSION_RUNNING"})
+        print(f"    Session {session_id[:12]}... is ready")
+
+        # Cancel the session
+        resp = client.post(
+            f"{SESSION_SERVICE_URL}/sessions/{session_id}/cancel",
+            timeout=10,
+        )
+        if resp.status_code >= 500:
+            raise TestFailureError(f"Cancel returned {resp.status_code}: {resp.text[:300]}")
+        print(f"    Cancel response: {resp.status_code}")
+
+        # Wait for session to reach terminal state
+        poll_session_status(
+            client,
+            session_id,
+            {"SESSION_CANCELLED", "SANDBOX_TERMINATED"},
+            timeout=15,
+        )
+        print("    Session is in terminal state")
+
+        # Attempt upload — should get 409
+        resp = client.post(
+            f"{SESSION_SERVICE_URL}/sessions/{session_id}/upload",
+            params={"path": "should-fail.txt"},
+            files={"file": ("should-fail.txt", b"nope", "text/plain")},
+            headers={"X-User-Id": USER_ID},
+            timeout=10,
+        )
+        print(f"    Upload to terminated session → {resp.status_code}")
+        if resp.status_code != 409:
+            raise TestFailureError(
+                f"Expected 409 for upload to terminated session, got {resp.status_code}: "
+                f"{resp.text[:300]}"
+            )
+        print("    Correctly returned 409 for upload to terminated session")
+
+    finally:
+        if session_id:
+            cancel_session(client, session_id)
+        client.close()
+
+
+def test_upload_persistence_after_termination():
+    """Uploaded files survive session termination — still accessible in Workspace Service S3.
+
+    Flow:
+      1. Create session, wait for ready
+      2. Upload file (persisted + synced)
+      3. Cancel/terminate session
+      4. Verify file still in Workspace Service S3
+    """
+    client = httpx.Client()
+    session_id = None
+    try:
+        session_id, workspace_id, _data = create_sandbox_with_workspace(client)
+        poll_session_status(client, session_id, {"SANDBOX_READY", "SESSION_RUNNING"})
+
+        # Upload file
+        test_content = b"This file should survive termination.\n"
+        test_path = "persist-test.txt"
+        _resp, upload_result = upload_file(client, session_id, test_path, test_content)
+        print(f"    Upload result: {upload_result}")
+        if not upload_result.get("persisted"):
+            raise TestFailureError("Expected persisted=true")
+
+        # Terminate session
+        resp = client.post(
+            f"{SESSION_SERVICE_URL}/sessions/{session_id}/cancel",
+            timeout=10,
+        )
+        print(f"    Cancel response: {resp.status_code}")
+        poll_session_status(
+            client,
+            session_id,
+            {"SESSION_CANCELLED", "SANDBOX_TERMINATED"},
+            timeout=15,
+        )
+        print("    Session terminated")
+
+        # Verify file still in Workspace Service S3
+        verify_files_in_workspace(client, workspace_id, {test_path})
+        print(f"    File '{test_path}' still in Workspace Service S3 after termination")
+
+    finally:
+        if session_id:
+            cancel_session(client, session_id)
+        client.close()
+
+
+def test_upload_sync_failure_still_persists():
+    """Upload with no sandbox to sync to still persists to S3 (persisted=true, sandboxSynced=false).
+
+    Creates a session and uploads immediately during SANDBOX_PROVISIONING.
+    The sandbox isn't running yet, so sync cannot happen, but the file persists to S3.
+    """
+    client = httpx.Client()
+    session_id = None
+    try:
+        session_id, workspace_id, data = create_sandbox_with_workspace(client)
+
+        # Verify we're in provisioning (no sandbox to sync to)
+        status = data.get("status")
+        if status != "SANDBOX_PROVISIONING":
+            raise TestFailureError(f"Expected SANDBOX_PROVISIONING, got {status}")
+
+        # Upload — should persist to S3 but fail sandbox sync
+        test_content = b"Sync should fail, persist should succeed.\n"
+        test_path = "sync-fail-test.txt"
+        _resp, upload_result = upload_file(
+            client, session_id, test_path, test_content, retries=1,
+        )
+        print(f"    Upload result: {upload_result}")
+
+        if not upload_result.get("persisted"):
+            raise TestFailureError(f"Expected persisted=true, got {upload_result}")
+        if upload_result.get("sandboxSynced"):
+            raise TestFailureError(
+                f"Expected sandboxSynced=false (no sandbox), got {upload_result}"
+            )
+        print("    Upload result: persisted=true, sandboxSynced=false")
+
+        # Verify file in Workspace Service S3
+        verify_files_in_workspace(client, workspace_id, {test_path})
+        print(f"    File '{test_path}' verified in Workspace Service S3 despite sync failure")
 
     finally:
         if session_id:
@@ -813,8 +1010,11 @@ def main():
 
     scenarios = [
         ("Full Lifecycle", test_full_lifecycle),
-        ("File Upload/Download", test_file_upload_download),
+        ("Unified File Upload/Download", test_file_upload_download),
         ("Workspace Preseed Sync", test_workspace_preseed_sync),
+        ("Upload to Terminated Session", test_upload_to_terminated_session),
+        ("Upload Persistence After Termination", test_upload_persistence_after_termination),
+        ("Upload Sync Failure Still Persists", test_upload_sync_failure_still_persists),
         ("SSE Reconnect", test_sse_reconnect),
         ("Idle Timeout", test_idle_timeout),
         ("Provisioning Timeout", test_provisioning_timeout),
