@@ -16,8 +16,14 @@ Python, FastAPI, PynamoDB/boto3, Pydantic models from `cowork-platform`.
 |--------|------|---------|
 | `POST` | `/sessions` | Create session — resolve workspace, fetch policy, return sessionId + policyBundle + featureFlags |
 | `POST` | `/sessions/{sessionId}/resume` | Resume session (after completion, failure, or crash) — re-validate policy, extend expiry, return refreshed bundle |
+| `POST` | `/sessions/{sessionId}/register` | Sandbox self-registration — validates task ARN, stores endpoint, transitions to `SANDBOX_READY`, returns policy bundle |
 | `POST` | `/sessions/{sessionId}/cancel` | Cancel session |
-| `GET` | `/sessions/{sessionId}` | Get session metadata |
+| `GET` | `/sessions/{sessionId}` | Get session metadata (includes sandbox fields when present) |
+| `POST` | `/sessions/{sessionId}/rpc` | Proxy: forward JSON-RPC to sandbox `/rpc` |
+| `GET` | `/sessions/{sessionId}/events` | Proxy: SSE stream from sandbox (supports `Last-Event-ID`) |
+| `POST` | `/sessions/{sessionId}/upload` | Proxy: forward multipart file upload to sandbox |
+| `GET` | `/sessions/{sessionId}/files/{path}` | Proxy: download file from sandbox workspace |
+| `GET` | `/sessions/{sessionId}/files` | Proxy: list files or download workspace archive |
 
 ## Session Handshake Flow
 
@@ -31,7 +37,8 @@ LLM Gateway config (endpoint + auth token) is NOT in the response — agent-runt
 ## Workspace Resolution
 
 - `workspaceHint.localPaths` provided → resolve/create a `local`-scoped workspace (reused per project)
-- No `workspaceHint` → create a `general`-scoped workspace (single-use)
+- No `workspaceHint` (desktop) → create a `general`-scoped workspace (single-use)
+- `cloud_sandbox` sessions → create a `cloud`-scoped workspace (S3-backed)
 
 ## Compatibility Check
 
@@ -57,18 +64,68 @@ SessionService
 |-----|----|----|-----|
 | `tenantId-userId-index` | `tenantId` | `createdAt` | List sessions for a user |
 
-Stored: `sessionId`, `tenantId`, `userId`, `workspaceId`, `executionEnvironment`, `status`, `createdAt`, `expiresAt`, `ttl`, `clientInfo`
+Stored: `sessionId`, `tenantId`, `userId`, `workspaceId`, `executionEnvironment`, `status`, `createdAt`, `expiresAt`, `ttl`, `clientInfo`, `sandboxEndpoint`, `taskArn`, `expectedTaskArn`, `networkAccess`, `lastActivityAt`
 
 ## Session States
 
+Desktop sessions:
 `SESSION_CREATED` → `SESSION_RUNNING` ↔ `WAITING_FOR_LLM` / `WAITING_FOR_TOOL` / `WAITING_FOR_APPROVAL` / `SESSION_PAUSED` → `SESSION_COMPLETED` / `SESSION_FAILED` / `SESSION_CANCELLED`
 
-Resumable: `SESSION_COMPLETED` and `SESSION_FAILED` can transition back to `SESSION_RUNNING` via `POST /sessions/{id}/resume`. `SESSION_CANCELLED` is terminal.
+Sandbox sessions (cloud_sandbox):
+`SANDBOX_PROVISIONING` → `SANDBOX_READY` → `SESSION_RUNNING` ↔ (same as desktop) → `SANDBOX_TERMINATED`
+
+`SANDBOX_PROVISIONING`: ECS task is starting. Set at session creation for `cloud_sandbox` sessions.
+`SANDBOX_READY`: Container registered via `POST /sessions/{id}/register`. Sandbox is ready for work.
+`SANDBOX_TERMINATED`: Container shut down (idle timeout, max duration, or explicit). Terminal state.
+
+Resumable: `SESSION_COMPLETED` and `SESSION_FAILED` can transition back to `SESSION_RUNNING` via `POST /sessions/{id}/resume`. `SESSION_CANCELLED` and `SANDBOX_TERMINATED` are terminal.
+
+## Sandbox Launcher
+
+Pluggable `SandboxLauncher` abstraction with two implementations:
+
+| Config | Implementation | Use case |
+|--------|---------------|----------|
+| `SANDBOX_LAUNCHER_TYPE=ecs` | `EcsSandboxLauncher` — ECS RunTask/StopTask/DescribeTasks | Production |
+| `SANDBOX_LAUNCHER_TYPE=local` | `LocalSandboxLauncher` — subprocess spawn with free port | Development |
+
+`SandboxService` orchestrates provisioning (limit check → launch → store expected_task_arn) and termination (best-effort stop → status transition). Wired in `main.py` lifespan via `AsyncExitStack`.
+
+Key config: `SANDBOX_MAX_CONCURRENT_SESSIONS` (default 5), `ECS_CLUSTER`, `ECS_TASK_DEFINITION`, `ECS_SUBNETS`, `ECS_SECURITY_GROUPS`, `AGENT_RUNTIME_PATH`, `SESSION_SERVICE_URL`.
+
+## Proxy Layer
+
+`ProxyService` resolves sandbox endpoints with TTL caching (30s default), validates session ownership and state, and batch-updates `lastActivityAt` (at most once per 60s). Five proxy endpoints forward browser traffic to sandbox containers:
+
+- `POST /rpc` — JSON-RPC (buffered request/response)
+- `GET /events` — SSE streaming (chunk-by-chunk, `Last-Event-ID` pass-through)
+- `POST /upload` — Multipart file upload
+- `GET /files/{path}` — File download
+- `GET /files` — File listing or archive download
+
+Error mapping: sandbox unreachable → 503, session not found → 404, inactive → 409, wrong owner → 403. Separate `httpx.AsyncClient` with its own connection pool for sandbox connections.
+
+Key config: `PROXY_ENDPOINT_CACHE_TTL_SECONDS` (30), `PROXY_ACTIVITY_BATCH_SECONDS` (60), `PROXY_TIMEOUT_SECONDS` (30), `PROXY_SSE_TIMEOUT_SECONDS` (14400).
+
+## Sandbox Lifecycle Manager
+
+`SandboxLifecycleManager` runs as a background `asyncio.Task` started in lifespan (only when `sandbox_service` is configured). Periodically checks all active sandbox sessions for:
+
+1. **Provisioning timeout**: `SANDBOX_PROVISIONING` sessions older than `SANDBOX_PROVISION_TIMEOUT_SECONDS` (default 180) → transition to `SESSION_FAILED`
+2. **Max duration**: Active sandbox sessions older than `SANDBOX_MAX_DURATION_SECONDS` (default 14400 / 4h) → terminate via `SandboxService`
+3. **Idle timeout**: Sessions with no `lastActivityAt` update within `SANDBOX_IDLE_TIMEOUT_SECONDS` (default 1800 / 30m) AND no running tasks → terminate via `SandboxService`
+
+Key design:
+- Uses `conditional_update_status()` (DynamoDB ConditionExpression) to prevent double-termination when multiple service instances run concurrently
+- Per-session error handling — one failed session doesn't block others
+- `terminate_sandbox()` is best-effort — failure is logged but doesn't crash the loop
+- Check interval: `SANDBOX_LIFECYCLE_CHECK_INTERVAL_SECONDS` (default 300 / 5m)
 
 ## External Calls
 
 - Policy Service: `GET /policy-bundles?tenantId=...&userId=...&sessionId=...&capabilities=...`
 - Workspace Service: `POST /workspaces` (create/resolve)
+- ECS (production): `RunTask`, `StopTask`, `DescribeTasks` via aioboto3
 
 ## Design Doc
 
@@ -99,10 +156,17 @@ cowork-session-service/
         __init__.py
         health.py             # GET /health, GET /ready
         sessions.py           # Session CRUD endpoints
+        sandbox.py            # Sandbox registration endpoint
+        proxy.py              # Proxy endpoints (rpc, events, upload, files)
+        tasks.py              # Task CRUD endpoints
       services/
         __init__.py
         session_service.py    # Business logic
         compatibility.py      # Version/capability compatibility checks
+        sandbox_launcher.py   # SandboxLauncher protocol + LaunchResult
+        sandbox_service.py    # Sandbox provisioning and termination orchestration
+        sandbox_lifecycle.py  # Background lifecycle manager (idle/provisioning/max-duration)
+        proxy_service.py      # Endpoint caching, ownership validation, activity tracking
       repositories/
         __init__.py
         base.py               # SessionRepository Protocol
@@ -112,12 +176,16 @@ cowork-session-service/
         __init__.py
         policy_client.py      # Policy Service HTTP client
         workspace_client.py   # Workspace Service HTTP client
+        ecs_launcher.py       # ECS Fargate sandbox launcher (production)
+        local_launcher.py     # Local subprocess sandbox launcher (development)
       models/
         __init__.py
         domain.py             # Session domain models
         requests.py           # API request models
         responses.py          # API response models
       exceptions.py           # Service-specific exceptions
+  scripts/
+    test-web-sandbox.py       # E2E integration test for web sandbox lifecycle
   tests/
     unit/                     # pytest -m unit (InMemory repos, mocked clients)
     service/                  # pytest -m service (DynamoDB Local)
@@ -150,6 +218,7 @@ make test              # pytest -m unit
 make test-unit         # pytest -m unit
 make test-service      # pytest -m service (requires DynamoDB Local)
 make test-integration  # pytest -m integration (requires LocalStack)
+make test-web-sandbox  # E2E web sandbox lifecycle (requires running services)
 make coverage          # pytest -m unit --cov --cov-fail-under=90
 make docker-build      # docker build -t session-service .
 make docker-run        # docker run with .env
@@ -165,6 +234,12 @@ ServiceError (base — carries code, message, retryable, details)
   ├── NotFoundError          → 404, code: SESSION_NOT_FOUND
   ├── ConflictError          → 409 (e.g., session already exists)
   ├── ValidationError        → 400, code: INVALID_REQUEST
+  ├── SandboxRegistrationError → 409 (wrong state, task ARN mismatch)
+  ├── SandboxProvisionError  → 502 (ECS RunTask failure, subprocess error)
+  ├── ConcurrentSessionLimitError → 409 (too many active sandbox sessions)
+  ├── ForbiddenError         → 403 (not session owner)
+  ├── SessionInactiveError   → 409 (session not in proxyable state)
+  ├── SandboxUnavailableError → 503 (sandbox container not responding)
   ├── PolicyBundleError      → 502 (Policy Service returned invalid bundle)
   ├── DownstreamError        → 502/503 (Policy Service or Workspace Service unreachable)
   └── IncompatibleError      → 409, code: POLICY_BUNDLE_INVALID

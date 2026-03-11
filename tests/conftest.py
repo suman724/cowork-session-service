@@ -18,7 +18,7 @@ from session_service.dependencies import get_session_service, get_task_service
 from session_service.exceptions import ServiceError
 from session_service.repositories.memory import InMemorySessionRepository
 from session_service.repositories.memory_task import InMemoryTaskRepository
-from session_service.routes import health, sessions, tasks
+from session_service.routes import health, sandbox, sessions, tasks
 from session_service.services.session_service import SessionService
 from session_service.services.task_service import TaskService
 
@@ -123,6 +123,7 @@ async def client(
     app = FastAPI()
     app.include_router(health.router)
     app.include_router(sessions.router)
+    app.include_router(sandbox.router)
     app.include_router(tasks.router)
     app.add_exception_handler(ServiceError, _service_error_handler)
 

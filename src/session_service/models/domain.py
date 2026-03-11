@@ -17,6 +17,9 @@ SessionState = Literal[
     "SESSION_COMPLETED",
     "SESSION_FAILED",
     "SESSION_CANCELLED",
+    "SANDBOX_PROVISIONING",
+    "SANDBOX_READY",
+    "SANDBOX_TERMINATED",
 ]
 
 # Valid state transitions
@@ -30,30 +33,44 @@ VALID_TRANSITIONS: dict[str, set[str]] = {
         "SESSION_COMPLETED",
         "SESSION_FAILED",
         "SESSION_CANCELLED",
+        "SANDBOX_TERMINATED",  # Sandbox lifecycle manager (idle/max-duration)
     },
     "WAITING_FOR_LLM": {
         "SESSION_RUNNING",
         "SESSION_FAILED",
         "SESSION_CANCELLED",
+        "SANDBOX_TERMINATED",  # Sandbox lifecycle manager
     },
     "WAITING_FOR_TOOL": {
         "SESSION_RUNNING",
         "SESSION_FAILED",
         "SESSION_CANCELLED",
+        "SANDBOX_TERMINATED",  # Sandbox lifecycle manager
     },
     "WAITING_FOR_APPROVAL": {
         "SESSION_RUNNING",
         "SESSION_FAILED",
         "SESSION_CANCELLED",
+        "SANDBOX_TERMINATED",  # Sandbox lifecycle manager
     },
     "SESSION_PAUSED": {
         "SESSION_RUNNING",
         "SESSION_FAILED",
         "SESSION_CANCELLED",
+        "SANDBOX_TERMINATED",  # Sandbox lifecycle manager
     },
     "SESSION_COMPLETED": {"SESSION_RUNNING"},  # Allow resume
     "SESSION_FAILED": {"SESSION_RUNNING"},  # Allow resume after failure
     "SESSION_CANCELLED": set(),
+    # Sandbox lifecycle states (cloud_sandbox sessions only)
+    "SANDBOX_PROVISIONING": {"SANDBOX_READY", "SESSION_FAILED", "SESSION_CANCELLED"},
+    "SANDBOX_READY": {
+        "SESSION_RUNNING",
+        "SANDBOX_TERMINATED",
+        "SESSION_FAILED",
+        "SESSION_CANCELLED",
+    },
+    "SANDBOX_TERMINATED": set(),  # Terminal — sandbox is gone
 }
 
 
@@ -75,6 +92,13 @@ class SessionDomain(BaseModel):
     expires_at: datetime
     updated_at: datetime | None = None
     ttl: int | None = None
+    # Sandbox-specific fields (cloud_sandbox sessions only)
+    sandbox_endpoint: str | None = None
+    task_arn: str | None = None
+    expected_task_arn: str | None = None
+    registration_token: str | None = None
+    network_access: Literal["enabled", "disabled"] | None = None
+    last_activity_at: datetime | None = None
 
     def can_transition_to(self, new_status: str) -> bool:
         """Check if the given transition is valid."""

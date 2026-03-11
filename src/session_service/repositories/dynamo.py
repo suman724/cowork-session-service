@@ -2,7 +2,7 @@
 
 Table: {env}-sessions
   PK: sessionId
-  GSI: tenantId-userId-index (PK=tenantId, SK=userId)
+  GSI: tenantId-userId-index (PK=tenantId, SK=createdAt)
   TTL attribute: ttl
 """
 
@@ -68,6 +68,110 @@ class DynamoSessionRepository:
             ExpressionAttributeValues={":name": name, ":an": auto_named, ":ua": now},
         )
 
+    async def register_sandbox(self, session_id: str, sandbox_endpoint: str, status: str) -> None:
+        now = datetime.now(UTC).isoformat()
+        try:
+            await self._table.update_item(
+                Key={"sessionId": session_id},
+                UpdateExpression="SET sandboxEndpoint = :ep, #s = :status, updatedAt = :ua",
+                ConditionExpression="#s = :expected",
+                ExpressionAttributeNames={"#s": "status"},
+                ExpressionAttributeValues={
+                    ":ep": sandbox_endpoint,
+                    ":status": status,
+                    ":expected": "SANDBOX_PROVISIONING",
+                    ":ua": now,
+                },
+            )
+        except self._table.meta.client.exceptions.ConditionalCheckFailedException as exc:
+            from session_service.exceptions import SandboxRegistrationError
+
+            raise SandboxRegistrationError(
+                "Sandbox registration failed: session status changed concurrently"
+            ) from exc
+
+    async def count_active_sandboxes(self, tenant_id: str, user_id: str) -> int:
+        active_statuses = {"SANDBOX_PROVISIONING", "SANDBOX_READY", "SESSION_RUNNING"}
+        resp = await self._table.query(
+            IndexName="tenantId-userId-index",
+            KeyConditionExpression="tenantId = :tid",
+            FilterExpression=(
+                "userId = :uid AND executionEnvironment = :env AND #s IN (:s1, :s2, :s3)"
+            ),
+            ExpressionAttributeNames={"#s": "status"},
+            ExpressionAttributeValues={
+                ":tid": tenant_id,
+                ":uid": user_id,
+                ":env": "cloud_sandbox",
+                ":s1": "SANDBOX_PROVISIONING",
+                ":s2": "SANDBOX_READY",
+                ":s3": "SESSION_RUNNING",
+            },
+            Select="COUNT",
+        )
+        _ = active_statuses  # used to document intent
+        return int(resp.get("Count", 0))
+
+    async def store_expected_task_arn(self, session_id: str, expected_task_arn: str) -> None:
+        now = datetime.now(UTC).isoformat()
+        await self._table.update_item(
+            Key={"sessionId": session_id},
+            UpdateExpression="SET expectedTaskArn = :arn, updatedAt = :ua",
+            ExpressionAttributeValues={":arn": expected_task_arn, ":ua": now},
+        )
+
+    async def update_last_activity(self, session_id: str, last_activity_at: datetime) -> None:
+        await self._table.update_item(
+            Key={"sessionId": session_id},
+            UpdateExpression="SET lastActivityAt = :la, updatedAt = :ua",
+            ExpressionAttributeValues={
+                ":la": last_activity_at.isoformat(),
+                ":ua": last_activity_at.isoformat(),
+            },
+        )
+
+    async def list_sandbox_sessions_by_status(self, statuses: set[str]) -> list[SessionDomain]:
+        status_list = sorted(statuses)
+        values = {f":s{i}": s for i, s in enumerate(status_list)}
+        values[":env"] = "cloud_sandbox"
+        status_expr = ", ".join(f":s{i}" for i in range(len(status_list)))
+        filter_expr = f"executionEnvironment = :env AND #status IN ({status_expr})"
+
+        items: list[dict[str, Any]] = []
+        kwargs: dict[str, Any] = {
+            "FilterExpression": filter_expr,
+            "ExpressionAttributeNames": {"#status": "status"},
+            "ExpressionAttributeValues": values,
+        }
+        while True:
+            resp = await self._table.scan(**kwargs)
+            items.extend(resp.get("Items", []))
+            last_key = resp.get("LastEvaluatedKey")
+            if not last_key:
+                break
+            kwargs["ExclusiveStartKey"] = last_key
+        return [_from_item(item) for item in items]
+
+    async def conditional_update_status(
+        self, session_id: str, new_status: str, expected_status: str
+    ) -> bool:
+        now = datetime.now(UTC).isoformat()
+        try:
+            await self._table.update_item(
+                Key={"sessionId": session_id},
+                UpdateExpression="SET #s = :new_status, updatedAt = :ua",
+                ConditionExpression="#s = :expected",
+                ExpressionAttributeNames={"#s": "status"},
+                ExpressionAttributeValues={
+                    ":new_status": new_status,
+                    ":expected": expected_status,
+                    ":ua": now,
+                },
+            )
+        except self._table.meta.client.exceptions.ConditionalCheckFailedException:
+            return False
+        return True
+
     async def delete(self, session_id: str) -> None:
         await self._table.delete_item(Key={"sessionId": session_id})
 
@@ -94,6 +198,19 @@ def _to_item(s: SessionDomain) -> dict[str, Any]:
     item["autoNamed"] = s.auto_named
     if s.ttl is not None:
         item["ttl"] = s.ttl
+    # Sandbox-specific fields (cloud_sandbox sessions only)
+    if s.sandbox_endpoint is not None:
+        item["sandboxEndpoint"] = s.sandbox_endpoint
+    if s.task_arn is not None:
+        item["taskArn"] = s.task_arn
+    if s.expected_task_arn is not None:
+        item["expectedTaskArn"] = s.expected_task_arn
+    if s.registration_token is not None:
+        item["registrationToken"] = s.registration_token
+    if s.network_access is not None:
+        item["networkAccess"] = s.network_access
+    if s.last_activity_at is not None:
+        item["lastActivityAt"] = s.last_activity_at.isoformat()
     return item
 
 
@@ -114,4 +231,13 @@ def _from_item(item: dict[str, Any]) -> SessionDomain:
         expires_at=datetime.fromisoformat(item["expiresAt"]),
         updated_at=datetime.fromisoformat(item["updatedAt"]) if item.get("updatedAt") else None,
         ttl=item.get("ttl"),
+        # Sandbox-specific fields
+        sandbox_endpoint=item.get("sandboxEndpoint"),
+        task_arn=item.get("taskArn"),
+        expected_task_arn=item.get("expectedTaskArn"),
+        registration_token=item.get("registrationToken"),
+        network_access=item.get("networkAccess"),
+        last_activity_at=(
+            datetime.fromisoformat(item["lastActivityAt"]) if item.get("lastActivityAt") else None
+        ),
     )

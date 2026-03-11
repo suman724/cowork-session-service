@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Any
 
 import aioboto3
@@ -20,7 +20,10 @@ from session_service.exceptions import ServiceError
 from session_service.middleware import RequestIdMiddleware
 from session_service.repositories.dynamo import DynamoSessionRepository
 from session_service.repositories.dynamo_task import DynamoTaskRepository
-from session_service.routes import health, sessions, tasks
+from session_service.routes import health, proxy, sandbox, sessions, tasks
+from session_service.services.proxy_service import ProxyService
+from session_service.services.sandbox_lifecycle import SandboxLifecycleManager
+from session_service.services.sandbox_service import SandboxService
 from session_service.services.session_service import SessionService
 from session_service.services.task_service import TaskService
 
@@ -61,7 +64,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         timeout=httpx.Timeout(settings.downstream_timeout),
     )
 
-    async with boto_session.resource("dynamodb", **boto_kwargs) as dynamodb:
+    async with AsyncExitStack() as stack:
+        dynamodb = await stack.enter_async_context(boto_session.resource("dynamodb", **boto_kwargs))
         table = await dynamodb.Table(settings.sessions_table)
         repo = DynamoSessionRepository(table)
 
@@ -71,12 +75,59 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         policy_client = PolicyClient(policy_http)
         workspace_client = WorkspaceClient(workspace_http)
 
-        app.state.session_service = SessionService(repo, policy_client, workspace_client, settings)
-        app.state.task_service = TaskService(task_repo, repo)
+        # Proxy HTTP client (separate pool, longer SSE timeout)
+        proxy_http = httpx.AsyncClient(
+            timeout=httpx.Timeout(
+                settings.proxy_timeout_seconds,
+                connect=10.0,
+            ),
+            follow_redirects=False,
+        )
+        proxy_service = ProxyService(
+            repo,
+            endpoint_cache_ttl=settings.proxy_endpoint_cache_ttl_seconds,
+            activity_batch_seconds=settings.proxy_activity_batch_seconds,
+        )
 
-        logger.info("session_service_started", env=settings.env)
+        # Build sandbox launcher based on config
+        sandbox_service: SandboxService | None = None
+        if settings.sandbox_launcher_type == "local":
+            from session_service.clients.local_launcher import LocalSandboxLauncher
+
+            local_launcher = LocalSandboxLauncher(settings)
+            sandbox_service = SandboxService(local_launcher, repo, settings, proxy_service)
+        elif settings.sandbox_launcher_type == "ecs":
+            from session_service.clients.ecs_launcher import EcsSandboxLauncher
+
+            ecs_client = await stack.enter_async_context(boto_session.client("ecs", **boto_kwargs))
+            ecs_launcher = EcsSandboxLauncher(ecs_client, settings)
+            sandbox_service = SandboxService(ecs_launcher, repo, settings, proxy_service)
+
+        app.state.session_service = SessionService(
+            repo, policy_client, workspace_client, settings, sandbox_service
+        )
+        app.state.task_service = TaskService(task_repo, repo)
+        app.state.sandbox_service = sandbox_service
+        app.state.proxy_service = proxy_service
+        app.state.proxy_http = proxy_http
+        app.state.proxy_sse_timeout = settings.proxy_sse_timeout_seconds
+
+        # Start sandbox lifecycle manager (idle/provisioning/max-duration checks)
+        lifecycle_manager: SandboxLifecycleManager | None = None
+        if sandbox_service is not None:
+            lifecycle_manager = SandboxLifecycleManager(repo, task_repo, sandbox_service, settings)
+            await lifecycle_manager.start()
+
+        logger.info(
+            "session_service_started",
+            env=settings.env,
+            launcher=settings.sandbox_launcher_type,
+        )
         yield
 
+        if lifecycle_manager is not None:
+            await lifecycle_manager.stop()
+        await proxy_http.aclose()
         await policy_http.aclose()
         await workspace_http.aclose()
         logger.info("session_service_stopped")
@@ -93,6 +144,8 @@ def create_app() -> FastAPI:
 
     app.include_router(health.router)
     app.include_router(sessions.router)
+    app.include_router(sandbox.router)
+    app.include_router(proxy.router)
     app.include_router(tasks.router)
 
     app.add_exception_handler(ServiceError, _service_error_handler)

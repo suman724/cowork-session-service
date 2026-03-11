@@ -6,10 +6,20 @@ Session lifecycle service for the cowork platform. Entry point for all agent ses
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/sessions` | Create session (handshake) |
+| POST | `/sessions` | Create session (handshake). Cloud sandbox sessions start in `SANDBOX_PROVISIONING` |
 | POST | `/sessions/{id}/resume` | Resume session (re-fetch policy) |
+| POST | `/sessions/{id}/register` | Sandbox self-registration — validates task ARN, stores endpoint, returns policy bundle |
 | POST | `/sessions/{id}/cancel` | Cancel session |
-| GET | `/sessions/{id}` | Get session metadata |
+| GET | `/sessions/{id}` | Get session metadata (includes sandbox fields when present) |
+| POST | `/sessions/{id}/tasks` | Create task within a session |
+| POST | `/sessions/{id}/tasks/{taskId}/complete` | Mark task as completed/failed/cancelled |
+| GET | `/sessions/{id}/tasks` | List tasks for a session |
+| GET | `/sessions/{id}/tasks/{taskId}` | Get task details |
+| POST | `/sessions/{id}/rpc` | Proxy: forward JSON-RPC to sandbox |
+| GET | `/sessions/{id}/events` | Proxy: SSE stream from sandbox |
+| POST | `/sessions/{id}/upload` | Proxy: file upload to sandbox |
+| GET | `/sessions/{id}/files/{path}` | Proxy: download file from sandbox |
+| GET | `/sessions/{id}/files` | Proxy: list/archive sandbox files |
 | GET | `/health` | Liveness check |
 | GET | `/ready` | Readiness check |
 
@@ -27,6 +37,9 @@ uvicorn session_service.main:app --reload
 
 # Run tests with coverage
 make coverage
+
+# Run web sandbox E2E integration tests (requires running services)
+make test-web-sandbox
 
 # Build Docker image
 make docker-build
@@ -49,6 +62,12 @@ Environment variables (see `.env.example`):
 | `MIN_DESKTOP_APP_VERSION` | `0.1.0` | Minimum Desktop App version |
 | `MIN_AGENT_HOST_VERSION` | `0.1.0` | Minimum Agent Host version |
 | `SESSION_EXPIRY_HOURS` | `24` | Hours until session expires |
+| `SANDBOX_LAUNCHER_TYPE` | `ecs` | Sandbox launcher: `ecs` (production) or `local` (development) |
+| `SANDBOX_MAX_CONCURRENT_SESSIONS` | `5` | Max active sandboxes per user |
+| `SANDBOX_IDLE_TIMEOUT_SECONDS` | `1800` | Terminate idle sandbox after this many seconds |
+| `SANDBOX_MAX_DURATION_SECONDS` | `14400` | Max sandbox session duration (absolute) |
+| `SANDBOX_PROVISION_TIMEOUT_SECONDS` | `180` | Fail provisioning sessions after this long |
+| `SANDBOX_LIFECYCLE_CHECK_INTERVAL_SECONDS` | `300` | How often to check sandbox lifecycles |
 
 ## Session Handshake Flow
 
@@ -60,6 +79,8 @@ Environment variables (see `.env.example`):
 
 ## Session States
 
+### Desktop sessions
+
 ```
 SESSION_CREATED → SESSION_RUNNING → SESSION_COMPLETED
                                   → SESSION_FAILED
@@ -70,6 +91,15 @@ SESSION_COMPLETED → SESSION_RUNNING  (via POST /sessions/{id}/resume)
 SESSION_FAILED    → SESSION_RUNNING  (via POST /sessions/{id}/resume)
 ```
 
-Terminal state: `SESSION_CANCELLED`
+### Sandbox sessions (cloud_sandbox)
+
+```
+SANDBOX_PROVISIONING → SANDBOX_READY   (via POST /sessions/{id}/register)
+                     → SESSION_FAILED  (provision timeout or launch failure)
+SANDBOX_READY → SESSION_RUNNING → (same as desktop)
+              → SANDBOX_TERMINATED  (idle timeout, max duration, explicit)
+```
+
+Terminal states: `SESSION_CANCELLED`, `SANDBOX_TERMINATED`
 
 Resumable states: `SESSION_COMPLETED`, `SESSION_FAILED` — resume transitions back to `SESSION_RUNNING`, refreshes policy bundle, and extends session expiry.

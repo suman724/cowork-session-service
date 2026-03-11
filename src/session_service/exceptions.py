@@ -63,3 +63,50 @@ class ValidationError(ServiceError):
 
     def __init__(self, message: str = "Invalid request") -> None:
         super().__init__(message, code="INVALID_REQUEST", status_code=400)
+
+
+class SandboxRegistrationError(ServiceError):
+    """Sandbox registration failed (wrong state, task ARN mismatch, etc.)."""
+
+    def __init__(self, message: str = "Sandbox registration failed") -> None:
+        super().__init__(message, code="SANDBOX_REGISTRATION_FAILED", status_code=409)
+
+
+class SandboxProvisionError(ServiceError):
+    """Sandbox provisioning failed (ECS RunTask failure, subprocess error, etc.)."""
+
+    def __init__(self, message: str = "Sandbox provisioning failed") -> None:
+        super().__init__(message, code="SANDBOX_PROVISION_FAILED", status_code=502)
+
+
+class ConcurrentSessionLimitError(ServiceError):
+    """User has too many active sandbox sessions."""
+
+    def __init__(self, message: str = "Concurrent sandbox session limit reached") -> None:
+        super().__init__(message, code="CONCURRENT_SESSION_LIMIT", status_code=409)
+
+
+class ForbiddenError(ServiceError):
+    """Caller does not own the resource."""
+
+    def __init__(self, message: str = "Forbidden") -> None:
+        super().__init__(message, code="FORBIDDEN", status_code=403)
+
+
+class SessionInactiveError(ServiceError):
+    """Session is not in a proxyable state."""
+
+    def __init__(self, current_status: str = "") -> None:
+        msg = (
+            f"Session is not active (status: {current_status})"
+            if current_status
+            else "Session is not active"
+        )
+        super().__init__(msg, code="SESSION_INACTIVE", status_code=409)
+
+
+class SandboxUnavailableError(ServiceError):
+    """Sandbox container is not responding or not registered."""
+
+    def __init__(self, message: str = "Sandbox container is not responding") -> None:
+        super().__init__(message, code="SANDBOX_UNREACHABLE", status_code=503)

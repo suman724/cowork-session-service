@@ -44,5 +44,52 @@ class InMemorySessionRepository:
             session.auto_named = auto_named
             session.updated_at = datetime.now(UTC)
 
+    async def register_sandbox(self, session_id: str, sandbox_endpoint: str, status: str) -> None:
+        session = self._sessions.get(session_id)
+        if session:
+            session.sandbox_endpoint = sandbox_endpoint
+            session.status = status  # type: ignore[assignment]
+            session.updated_at = datetime.now(UTC)
+
+    async def count_active_sandboxes(self, tenant_id: str, user_id: str) -> int:
+        active_statuses = {"SANDBOX_PROVISIONING", "SANDBOX_READY", "SESSION_RUNNING"}
+        return sum(
+            1
+            for s in self._sessions.values()
+            if s.tenant_id == tenant_id
+            and s.user_id == user_id
+            and s.execution_environment == "cloud_sandbox"
+            and s.status in active_statuses
+        )
+
+    async def store_expected_task_arn(self, session_id: str, expected_task_arn: str) -> None:
+        session = self._sessions.get(session_id)
+        if session:
+            session.expected_task_arn = expected_task_arn
+            session.updated_at = datetime.now(UTC)
+
+    async def update_last_activity(self, session_id: str, last_activity_at: datetime) -> None:
+        session = self._sessions.get(session_id)
+        if session:
+            session.last_activity_at = last_activity_at
+            session.updated_at = datetime.now(UTC)
+
+    async def list_sandbox_sessions_by_status(self, statuses: set[str]) -> list[SessionDomain]:
+        return [
+            s
+            for s in self._sessions.values()
+            if s.execution_environment == "cloud_sandbox" and s.status in statuses
+        ]
+
+    async def conditional_update_status(
+        self, session_id: str, new_status: str, expected_status: str
+    ) -> bool:
+        session = self._sessions.get(session_id)
+        if session and session.status == expected_status:
+            session.status = new_status  # type: ignore[assignment]
+            session.updated_at = datetime.now(UTC)
+            return True
+        return False
+
     async def delete(self, session_id: str) -> None:
         self._sessions.pop(session_id, None)
