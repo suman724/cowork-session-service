@@ -11,8 +11,10 @@ import structlog
 from fastapi import APIRouter, Depends, Request, UploadFile
 from fastapi.responses import StreamingResponse
 
-from session_service.dependencies import get_proxy_http, get_proxy_service
-from session_service.exceptions import SandboxUnavailableError, ValidationError
+from session_service.dependencies import get_file_upload_service, get_proxy_http, get_proxy_service
+from session_service.exceptions import SandboxUnavailableError, validate_file_path
+from session_service.models.responses import UploadFileResponse
+from session_service.services.file_upload_service import FileUploadService
 from session_service.services.proxy_service import ProxyService
 
 logger = structlog.get_logger()
@@ -196,33 +198,32 @@ async def proxy_upload(
     session_id: str,
     file: UploadFile,
     request: Request,
+    path: str | None = None,
     proxy: ProxyService = Depends(get_proxy_service),
-    proxy_http: httpx.AsyncClient = Depends(get_proxy_http),
-) -> StreamingResponse:
-    """Forward multipart file upload to sandbox."""
+    upload_service: FileUploadService = Depends(get_file_upload_service),
+) -> UploadFileResponse:
+    """Unified file upload: persist to S3 via Workspace Service, then sync to sandbox.
+
+    Query params:
+        path: Target file path within workspace. Falls back to uploaded filename.
+    """
     user_id = _get_user_id(request)
-    endpoint = await proxy.resolve_sandbox(session_id, user_id)
-
+    file_path = path or file.filename or "upload"
     content_type = file.content_type or "application/octet-stream"
-    files = {"file": (file.filename or "upload", file.file, content_type)}
+    file_content = await file.read()
 
-    resp = await _forward_request(
-        proxy_http,
-        proxy,
-        session_id,
-        "POST",
-        f"{endpoint}/upload",
-        log_prefix="proxy_upload",
-        files=files,
+    result = await upload_service.upload_file(
+        session_id=session_id,
+        user_id=user_id,
+        file_path=file_path,
+        file_content=file_content,
+        content_type=content_type,
+        filename=file.filename or "upload",
     )
 
     _fire_and_forget(proxy.update_activity(session_id))
 
-    return StreamingResponse(
-        content=_stream_and_close(resp),
-        status_code=resp.status_code,
-        media_type=resp.headers.get("content-type", "application/json"),
-    )
+    return result
 
 
 @router.get("/{session_id}/files/{file_path:path}")
@@ -234,9 +235,7 @@ async def proxy_file_download(
     proxy_http: httpx.AsyncClient = Depends(get_proxy_http),
 ) -> StreamingResponse:
     """Forward file download from sandbox workspace."""
-    # Path traversal prevention — reject paths that escape workspace root
-    if ".." in file_path.split("/") or file_path.startswith("/"):
-        raise ValidationError("Invalid file path")
+    validate_file_path(file_path)
 
     user_id = _get_user_id(request)
     endpoint = await proxy.resolve_sandbox(session_id, user_id)

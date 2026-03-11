@@ -73,6 +73,23 @@ VALID_TRANSITIONS: dict[str, set[str]] = {
     "SANDBOX_TERMINATED": set(),  # Terminal — sandbox is gone
 }
 
+# Terminal states — no transitions possible, session is done
+TERMINAL_STATUSES: frozenset[str] = frozenset(
+    state for state, targets in VALID_TRANSITIONS.items() if not targets
+)
+
+# States where the sandbox is running and can receive proxy/sync traffic
+SANDBOX_ACTIVE_STATUSES: frozenset[str] = frozenset(
+    {
+        "SANDBOX_READY",
+        "SESSION_RUNNING",
+        "WAITING_FOR_LLM",
+        "WAITING_FOR_TOOL",
+        "WAITING_FOR_APPROVAL",
+        "SESSION_PAUSED",
+    }
+)
+
 
 class SessionDomain(BaseModel):
     """Internal session representation."""

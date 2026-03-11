@@ -21,6 +21,7 @@ from session_service.middleware import RequestIdMiddleware
 from session_service.repositories.dynamo import DynamoSessionRepository
 from session_service.repositories.dynamo_task import DynamoTaskRepository
 from session_service.routes import health, proxy, sandbox, sessions, tasks
+from session_service.services.file_upload_service import FileUploadService
 from session_service.services.proxy_service import ProxyService
 from session_service.services.sandbox_lifecycle import SandboxLifecycleManager
 from session_service.services.sandbox_service import SandboxService
@@ -110,7 +111,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.sandbox_service = sandbox_service
         app.state.proxy_service = proxy_service
         app.state.proxy_http = proxy_http
+        app.state.workspace_http = workspace_http
         app.state.proxy_sse_timeout = settings.proxy_sse_timeout_seconds
+        app.state.file_upload_service = FileUploadService(
+            repo,
+            workspace_http,
+            proxy_http,
+            sync_timeout=settings.upload_sync_timeout_seconds,
+        )
 
         # Start sandbox lifecycle manager (idle/provisioning/max-duration checks)
         lifecycle_manager: SandboxLifecycleManager | None = None

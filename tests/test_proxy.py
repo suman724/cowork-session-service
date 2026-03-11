@@ -260,15 +260,24 @@ class MockProxyHttpError:
 def _create_test_app(
     repo: InMemorySessionRepository,
     proxy_http: httpx.AsyncClient | None = None,
+    workspace_http: httpx.AsyncClient | None = None,
 ) -> FastAPI:
     """Build a minimal FastAPI app with proxy routes for testing."""
     from session_service.exceptions import ServiceError
     from session_service.routes import proxy as proxy_routes
+    from session_service.services.file_upload_service import FileUploadService
+
+    effective_proxy_http = proxy_http or httpx.AsyncClient()
+    effective_workspace_http = workspace_http or httpx.AsyncClient()
 
     app = FastAPI()
     app.state.proxy_service = ProxyService(repo)
-    app.state.proxy_http = proxy_http or httpx.AsyncClient()
+    app.state.proxy_http = effective_proxy_http
+    app.state.workspace_http = effective_workspace_http
     app.state.proxy_sse_timeout = 14400.0
+    app.state.file_upload_service = FileUploadService(
+        repo, effective_workspace_http, effective_proxy_http
+    )
     app.include_router(proxy_routes.router)
 
     @app.exception_handler(ServiceError)
@@ -396,26 +405,34 @@ class TestProxyRoutes:
         assert resp.status_code == 503
 
     @pytest.mark.unit
-    async def test_upload_forwards_to_sandbox(self) -> None:
+    async def test_upload_persists_and_syncs(self) -> None:
         repo = InMemorySessionRepository()
         session = _make_session()
         await repo.create(session)
 
-        mock_response = httpx.Response(
-            200,
-            json={"status": "uploaded"},
-            headers={"content-type": "application/json"},
-        )
-        mock_http = MockProxyHttp(mock_response)
+        # Mock workspace service (S3 persist)
+        ws_response = httpx.Response(201, json={"path": "test.txt", "size": 5})
+        mock_ws_http = MockProxyHttp(ws_response)
 
-        app = _create_test_app(repo, mock_http)  # type: ignore[arg-type]
+        # Mock sandbox (sync RPC)
+        sync_response = httpx.Response(
+            200,
+            json={"jsonrpc": "2.0", "result": {"synced": ["test.txt"]}, "id": 1},
+        )
+        mock_proxy_http = MockProxyHttp(sync_response)
+
+        app = _create_test_app(repo, mock_proxy_http, mock_ws_http)  # type: ignore[arg-type]
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.post(
                 "/sessions/sess-1/upload",
                 files={"file": ("test.txt", b"hello", "text/plain")},
+                params={"path": "test.txt"},
                 headers={"X-User-Id": "user-1"},
             )
         assert resp.status_code == 200
+        data = resp.json()
+        assert data["path"] == "test.txt"
+        assert data["persisted"] is True
 
     @pytest.mark.unit
     async def test_file_download_forwards_to_sandbox(self) -> None:

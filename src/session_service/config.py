@@ -42,6 +42,9 @@ class Settings(BaseSettings):
     proxy_timeout_seconds: float = 30.0
     proxy_sse_timeout_seconds: float = 14400.0  # 4 hours
 
+    # Upload settings
+    upload_sync_timeout_seconds: float = 10.0
+
     model_config = {"env_prefix": "", "env_file": ".env", "extra": "ignore"}
 
     @property

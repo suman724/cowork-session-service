@@ -21,7 +21,7 @@ Python, FastAPI, PynamoDB/boto3, Pydantic models from `cowork-platform`.
 | `GET` | `/sessions/{sessionId}` | Get session metadata (includes sandbox fields when present) |
 | `POST` | `/sessions/{sessionId}/rpc` | Proxy: forward JSON-RPC to sandbox `/rpc` |
 | `GET` | `/sessions/{sessionId}/events` | Proxy: SSE stream from sandbox (supports `Last-Event-ID`) |
-| `POST` | `/sessions/{sessionId}/upload` | Proxy: forward multipart file upload to sandbox |
+| `POST` | `/sessions/{sessionId}/upload` | Unified upload: persist to S3 via Workspace Service, then sync to sandbox |
 | `GET` | `/sessions/{sessionId}/files/{path}` | Proxy: download file from sandbox workspace |
 | `GET` | `/sessions/{sessionId}/files` | Proxy: list files or download workspace archive |
 
@@ -99,7 +99,7 @@ Key config: `SANDBOX_MAX_CONCURRENT_SESSIONS` (default 5), `ECS_CLUSTER`, `ECS_T
 
 - `POST /rpc` — JSON-RPC (buffered request/response)
 - `GET /events` — SSE streaming (chunk-by-chunk, `Last-Event-ID` pass-through)
-- `POST /upload` — Multipart file upload
+- `POST /upload` — Unified file upload (S3 persist + sandbox sync)
 - `GET /files/{path}` — File download
 - `GET /files` — File listing or archive download
 
@@ -167,6 +167,7 @@ cowork-session-service/
         sandbox_service.py    # Sandbox provisioning and termination orchestration
         sandbox_lifecycle.py  # Background lifecycle manager (idle/provisioning/max-duration)
         proxy_service.py      # Endpoint caching, ownership validation, activity tracking
+        file_upload_service.py # Unified upload: S3 persist + sandbox sync
       repositories/
         __init__.py
         base.py               # SessionRepository Protocol

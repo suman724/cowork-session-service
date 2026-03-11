@@ -105,6 +105,12 @@ class SessionInactiveError(ServiceError):
         super().__init__(msg, code="SESSION_INACTIVE", status_code=409)
 
 
+def validate_file_path(file_path: str) -> None:
+    """Reject empty, absolute, or path-traversal file paths."""
+    if not file_path or ".." in file_path.split("/") or file_path.startswith("/"):
+        raise ValidationError(f"Invalid file path: {file_path}")
+
+
 class SandboxUnavailableError(ServiceError):
     """Sandbox container is not responding or not registered."""
 

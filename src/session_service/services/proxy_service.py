@@ -14,21 +14,10 @@ from session_service.exceptions import (
     SessionInactiveError,
     SessionNotFoundError,
 )
+from session_service.models.domain import SANDBOX_ACTIVE_STATUSES
 from session_service.repositories.base import SessionRepository
 
 logger = structlog.get_logger()
-
-# Session statuses where proxy requests are allowed
-_PROXYABLE_STATUSES = frozenset(
-    {
-        "SANDBOX_READY",
-        "SESSION_RUNNING",
-        "WAITING_FOR_LLM",
-        "WAITING_FOR_TOOL",
-        "WAITING_FOR_APPROVAL",
-        "SESSION_PAUSED",
-    }
-)
 
 # Max cached sessions to prevent unbounded growth
 _MAX_CACHE_ENTRIES = 10_000
@@ -71,7 +60,7 @@ class ProxyService:
         if session.user_id != user_id:
             raise ForbiddenError("Not the session owner")
 
-        if session.status not in _PROXYABLE_STATUSES:
+        if session.status not in SANDBOX_ACTIVE_STATUSES:
             raise SessionInactiveError(session.status)
 
         if not session.sandbox_endpoint:
