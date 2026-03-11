@@ -49,5 +49,9 @@ class CreateSessionRequest(BaseModel):
 class SandboxRegistrationRequest(BaseModel):
     """POST /sessions/{session_id}/register request body."""
 
-    sandbox_endpoint: str = Field(alias="sandboxEndpoint", min_length=1)
+    sandbox_endpoint: str = Field(
+        alias="sandboxEndpoint",
+        min_length=1,
+        pattern=r"^https?://.+",
+    )
     task_arn: str = Field(alias="taskArn", min_length=1)

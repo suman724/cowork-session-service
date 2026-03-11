@@ -6,10 +6,15 @@ Session lifecycle service for the cowork platform. Entry point for all agent ses
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/sessions` | Create session (handshake) |
+| POST | `/sessions` | Create session (handshake). Cloud sandbox sessions start in `SANDBOX_PROVISIONING` |
 | POST | `/sessions/{id}/resume` | Resume session (re-fetch policy) |
+| POST | `/sessions/{id}/register` | Sandbox self-registration — validates task ARN, stores endpoint, returns policy bundle |
 | POST | `/sessions/{id}/cancel` | Cancel session |
-| GET | `/sessions/{id}` | Get session metadata |
+| GET | `/sessions/{id}` | Get session metadata (includes sandbox fields when present) |
+| POST | `/sessions/{id}/tasks` | Create task within a session |
+| POST | `/sessions/{id}/tasks/{taskId}/complete` | Mark task as completed/failed/cancelled |
+| GET | `/sessions/{id}/tasks` | List tasks for a session |
+| GET | `/sessions/{id}/tasks/{taskId}` | Get task details |
 | GET | `/health` | Liveness check |
 | GET | `/ready` | Readiness check |
 
@@ -60,6 +65,8 @@ Environment variables (see `.env.example`):
 
 ## Session States
 
+### Desktop sessions
+
 ```
 SESSION_CREATED → SESSION_RUNNING → SESSION_COMPLETED
                                   → SESSION_FAILED
@@ -70,6 +77,15 @@ SESSION_COMPLETED → SESSION_RUNNING  (via POST /sessions/{id}/resume)
 SESSION_FAILED    → SESSION_RUNNING  (via POST /sessions/{id}/resume)
 ```
 
-Terminal state: `SESSION_CANCELLED`
+### Sandbox sessions (cloud_sandbox)
+
+```
+SANDBOX_PROVISIONING → SANDBOX_READY   (via POST /sessions/{id}/register)
+                     → SESSION_FAILED  (provision timeout or launch failure)
+SANDBOX_READY → SESSION_RUNNING → (same as desktop)
+              → SANDBOX_TERMINATED  (idle timeout, max duration, explicit)
+```
+
+Terminal states: `SESSION_CANCELLED`, `SANDBOX_TERMINATED`
 
 Resumable states: `SESSION_COMPLETED`, `SESSION_FAILED` — resume transitions back to `SESSION_RUNNING`, refreshes policy bundle, and extends session expiry.

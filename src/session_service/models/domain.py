@@ -91,7 +91,7 @@ class SessionDomain(BaseModel):
     sandbox_endpoint: str | None = None
     task_arn: str | None = None
     expected_task_arn: str | None = None
-    network_access: str | None = None
+    network_access: Literal["enabled", "disabled"] | None = None
     last_activity_at: datetime | None = None
 
     def can_transition_to(self, new_status: str) -> bool:

@@ -419,6 +419,18 @@ class TestSandboxRegistrationRoute:
 
         assert resp.status_code == 422
 
+    async def test_register_endpoint_invalid_url(self, client: Any) -> None:
+        """POST /sessions/{id}/register returns 422 for non-URL sandboxEndpoint."""
+        resp = await client.post(
+            "/sessions/sess-1/register",
+            json={
+                "sandboxEndpoint": "not-a-url",
+                "taskArn": "arn:aws:ecs:us-east-1:123:task/cowork/abc123",
+            },
+        )
+
+        assert resp.status_code == 422
+
     async def test_register_endpoint_task_arn_mismatch(
         self,
         client: Any,

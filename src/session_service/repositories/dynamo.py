@@ -70,16 +70,25 @@ class DynamoSessionRepository:
 
     async def register_sandbox(self, session_id: str, sandbox_endpoint: str, status: str) -> None:
         now = datetime.now(UTC).isoformat()
-        await self._table.update_item(
-            Key={"sessionId": session_id},
-            UpdateExpression="SET sandboxEndpoint = :ep, #s = :status, updatedAt = :ua",
-            ExpressionAttributeNames={"#s": "status"},
-            ExpressionAttributeValues={
-                ":ep": sandbox_endpoint,
-                ":status": status,
-                ":ua": now,
-            },
-        )
+        try:
+            await self._table.update_item(
+                Key={"sessionId": session_id},
+                UpdateExpression="SET sandboxEndpoint = :ep, #s = :status, updatedAt = :ua",
+                ConditionExpression="#s = :expected",
+                ExpressionAttributeNames={"#s": "status"},
+                ExpressionAttributeValues={
+                    ":ep": sandbox_endpoint,
+                    ":status": status,
+                    ":expected": "SANDBOX_PROVISIONING",
+                    ":ua": now,
+                },
+            )
+        except self._table.meta.client.exceptions.ConditionalCheckFailedException as exc:
+            from session_service.exceptions import SandboxRegistrationError
+
+            raise SandboxRegistrationError(
+                "Sandbox registration failed: session status changed concurrently"
+            ) from exc
 
     async def delete(self, session_id: str) -> None:
         await self._table.delete_item(Key={"sessionId": session_id})
