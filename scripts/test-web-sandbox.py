@@ -26,6 +26,7 @@ Usage:
   make test-web-sandbox
 """
 
+import contextlib
 import json
 import os
 import sys
@@ -47,7 +48,7 @@ SKIP_LLM_TESTS = os.environ.get("SKIP_LLM_TESTS", "").lower() in ("1", "true", "
 # --- Exception ---
 
 
-class TestFailure(Exception):
+class TestFailureError(Exception):
     """Raised when a test scenario fails."""
 
 
@@ -64,15 +65,16 @@ def create_sandbox_session(client: httpx.Client) -> dict:
             "executionEnvironment": "cloud_sandbox",
             "clientInfo": {},
             "supportedCapabilities": [
-                "File.Read", "File.Write", "Shell.Exec", "Network.Http",
+                "File.Read",
+                "File.Write",
+                "Shell.Exec",
+                "Network.Http",
             ],
         },
         timeout=30,
     )
     if resp.status_code != 201:
-        raise TestFailure(
-            f"POST /sessions returned {resp.status_code}: {resp.text[:500]}"
-        )
+        raise TestFailureError(f"POST /sessions returned {resp.status_code}: {resp.text[:500]}")
     data = resp.json()
     print(f"    Session created: {data.get('sessionId', '?')[:12]}...")
     print(f"    Status: {data.get('status')}")
@@ -86,7 +88,7 @@ def get_session(client: httpx.Client, session_id: str) -> dict:
         timeout=10,
     )
     if resp.status_code != 200:
-        raise TestFailure(
+        raise TestFailureError(
             f"GET /sessions/{session_id} returned {resp.status_code}: {resp.text[:300]}"
         )
     return resp.json()
@@ -101,13 +103,15 @@ def poll_session_status(
     """Poll GET /sessions/{id} until status is in target_statuses."""
     start = time.time()
     last_status = "?"
+    interval = POLL_INTERVAL
     while time.time() - start < timeout:
         data = get_session(client, session_id)
         last_status = data.get("status", "?")
         if last_status in target_statuses:
             return data
-        time.sleep(POLL_INTERVAL)
-    raise TestFailure(
+        time.sleep(interval)
+        interval = min(interval * 1.5, 5.0)
+    raise TestFailureError(
         f"Session {session_id} did not reach {target_statuses} within {timeout}s "
         f"(last status: {last_status})"
     )
@@ -134,60 +138,17 @@ def send_rpc(
         timeout=timeout,
     )
     if resp.status_code >= 500:
-        raise TestFailure(
-            f"RPC {method} returned {resp.status_code}: {resp.text[:300]}"
-        )
+        raise TestFailureError(f"RPC {method} returned {resp.status_code}: {resp.text[:300]}")
     return resp.json()
 
 
 def cancel_session(client: httpx.Client, session_id: str) -> None:
     """Best-effort cancel session."""
-    try:
+    with contextlib.suppress(Exception):
         client.post(
             f"{SESSION_SERVICE_URL}/sessions/{session_id}/cancel",
             timeout=10,
         )
-    except Exception:
-        pass
-
-
-def parse_sse_events(
-    response: httpx.Response,
-    max_events: int = 100,
-    timeout: float = 30,
-) -> list[dict]:
-    """Parse SSE events from a streaming response.
-
-    Returns list of {"id": str, "event": str, "data": str/dict}.
-    """
-    events: list[dict] = []
-    current: dict[str, str] = {}
-    start = time.time()
-
-    for line in response.iter_lines():
-        if time.time() - start > timeout:
-            break
-        if line == "":
-            # Blank line = event boundary
-            if current:
-                # Try to parse data as JSON
-                raw_data = current.get("data", "")
-                try:
-                    current["data"] = json.loads(raw_data)
-                except (json.JSONDecodeError, TypeError):
-                    pass
-                events.append(current)
-                current = {}
-                if len(events) >= max_events:
-                    break
-        elif line.startswith("id:"):
-            current["id"] = line[3:].strip()
-        elif line.startswith("event:"):
-            current["event"] = line[6:].strip()
-        elif line.startswith("data:"):
-            current["data"] = line[5:].strip()
-
-    return events
 
 
 def collect_sse_in_thread(
@@ -204,35 +165,37 @@ def collect_sse_in_thread(
         headers["Last-Event-ID"] = last_event_id
 
     try:
-        with httpx.Client() as c:
-            with c.stream(
+        with (
+            httpx.Client() as c,
+            c.stream(
                 "GET",
                 f"{SESSION_SERVICE_URL}/sessions/{session_id}/events",
                 headers=headers,
                 timeout=httpx.Timeout(timeout, connect=10),
-            ) as resp:
-                current: dict[str, str] = {}
-                start = time.time()
-                for line in resp.iter_lines():
-                    if stop_event.is_set() or time.time() - start > timeout:
-                        break
-                    if line == "":
-                        if current:
-                            raw_data = current.get("data", "")
-                            try:
-                                current["data"] = json.loads(raw_data)
-                            except (json.JSONDecodeError, TypeError):
-                                pass
-                            events_out.append(current)
-                            current = {}
-                            if len(events_out) >= max_events:
-                                break
-                    elif line.startswith("id:"):
-                        current["id"] = line[3:].strip()
-                    elif line.startswith("event:"):
-                        current["event"] = line[6:].strip()
-                    elif line.startswith("data:"):
-                        current["data"] = line[5:].strip()
+            ) as resp,
+        ):
+            current: dict[str, str] = {}
+            start = time.time()
+            for line in resp.iter_lines():
+                if stop_event.is_set() or time.time() - start > timeout:
+                    break
+                if line == "":
+                    if current:
+                        raw_data = current.get("data", "")
+                        with contextlib.suppress(json.JSONDecodeError, TypeError):
+                            current["data"] = json.loads(raw_data)
+                        events_out.append(current)
+                        current = {}
+                        if len(events_out) >= max_events:
+                            break
+                elif line.startswith("id:"):
+                    current["id"] = line[3:].strip()
+                elif line.startswith("event:"):
+                    current["event"] = line[6:].strip()
+                elif line.startswith("data:"):
+                    prev = current.get("data", "")
+                    chunk = line[5:].strip()
+                    current["data"] = f"{prev}\n{chunk}" if prev else chunk
     except (httpx.ReadTimeout, httpx.RemoteProtocolError, httpx.ReadError):
         pass  # Expected when we stop
     except Exception as exc:
@@ -247,23 +210,23 @@ def test_full_lifecycle():
     """Full lifecycle: create → provision → ready → RPC → events → cancel."""
     client = httpx.Client()
     session_id = None
+    stop_event: threading.Event | None = None
+    sse_thread: threading.Thread | None = None
     try:
         # Create sandbox session
         data = create_sandbox_session(client)
         session_id = data["sessionId"]
         if data.get("status") != "SANDBOX_PROVISIONING":
-            raise TestFailure(f"Expected SANDBOX_PROVISIONING, got {data.get('status')}")
+            raise TestFailureError(f"Expected SANDBOX_PROVISIONING, got {data.get('status')}")
 
         # Wait for sandbox to register
         print("    Waiting for SANDBOX_READY...")
-        session_data = poll_session_status(
-            client, session_id, {"SANDBOX_READY", "SESSION_RUNNING"}
-        )
+        session_data = poll_session_status(client, session_id, {"SANDBOX_READY", "SESSION_RUNNING"})
         print(f"    Status: {session_data['status']}")
 
         # Verify sandbox endpoint is populated
         if not session_data.get("sandboxEndpoint"):
-            raise TestFailure("sandboxEndpoint not set after registration")
+            raise TestFailureError("sandboxEndpoint not set after registration")
         print(f"    Endpoint: {session_data['sandboxEndpoint']}")
 
         if SKIP_LLM_TESTS:
@@ -282,19 +245,35 @@ def test_full_lifecycle():
         time.sleep(1)  # Let SSE connect
 
         # Start a task via RPC proxy
-        rpc_resp = send_rpc(client, session_id, "StartTask", {
-            "taskId": "task-lifecycle-1",
-            "prompt": "Say hello in one sentence. Do not use any tools.",
-            "taskOptions": {"maxSteps": 5},
-        })
+        rpc_resp = send_rpc(
+            client,
+            session_id,
+            "StartTask",
+            {
+                "taskId": "task-lifecycle-1",
+                "prompt": "Say hello in one sentence. Do not use any tools.",
+                "taskOptions": {"maxSteps": 5},
+            },
+        )
         print(f"    RPC response: {json.dumps(rpc_resp)[:200]}")
 
         if "error" in rpc_resp:
-            raise TestFailure(f"StartTask RPC error: {rpc_resp['error']}")
+            raise TestFailureError(f"StartTask RPC error: {rpc_resp['error']}")
 
-        # Wait for events
+        # Wait for task completion or timeout
         print("    Waiting for SSE events...")
-        time.sleep(15)
+        deadline = time.time() + 60
+        while time.time() < deadline:
+            # Check if we got a terminal event (task_completed, task_failed)
+            for e in events:
+                if isinstance(e.get("data"), dict):
+                    et = e["data"].get("eventType", "")
+                    if et in ("task_completed", "task_failed", "TaskCompleted", "TaskFailed"):
+                        break
+            else:
+                time.sleep(1)
+                continue
+            break
         stop_event.set()
         sse_thread.join(timeout=5)
 
@@ -308,9 +287,13 @@ def test_full_lifecycle():
         print(f"    Event types: {event_types}")
 
         if not events:
-            raise TestFailure("No SSE events received")
+            raise TestFailureError("No SSE events received")
 
     finally:
+        if stop_event is not None:
+            stop_event.set()
+        if sse_thread is not None:
+            sse_thread.join(timeout=5)
         if session_id:
             cancel_session(client, session_id)
         client.close()
@@ -330,11 +313,16 @@ def test_sse_reconnect():
             return
 
         # Start a task to generate events
-        send_rpc(client, session_id, "StartTask", {
-            "taskId": "task-reconnect-1",
-            "prompt": "Say 'reconnect test complete' in one sentence. Do not use tools.",
-            "taskOptions": {"maxSteps": 5},
-        })
+        send_rpc(
+            client,
+            session_id,
+            "StartTask",
+            {
+                "taskId": "task-reconnect-1",
+                "prompt": "Say 'reconnect test complete' in one sentence. Do not use tools.",
+                "taskOptions": {"maxSteps": 5},
+            },
+        )
 
         # Collect first batch of events
         events_batch1: list[dict] = []
@@ -349,13 +337,13 @@ def test_sse_reconnect():
         stop1.set()
 
         if not events_batch1:
-            raise TestFailure("No events in first SSE batch")
+            raise TestFailureError("No events in first SSE batch")
 
         last_id = events_batch1[-1].get("id")
         print(f"    First batch: {len(events_batch1)} events, last_id={last_id}")
 
         if not last_id:
-            raise TestFailure("Events don't have IDs for reconnect")
+            raise TestFailureError("Events don't have IDs for reconnect")
 
         # Wait for more events to accumulate
         time.sleep(5)
@@ -384,7 +372,7 @@ def test_sse_reconnect():
             batch2_ids = {e.get("id") for e in events_batch2}
             overlap = batch1_ids & batch2_ids
             if overlap:
-                raise TestFailure(f"Duplicate event IDs on reconnect: {overlap}")
+                raise TestFailureError(f"Duplicate event IDs on reconnect: {overlap}")
             print("    No duplicate events on reconnect — replay works correctly")
 
     finally:
@@ -413,7 +401,7 @@ def test_file_upload_download():
             timeout=30,
         )
         if resp.status_code >= 400:
-            raise TestFailure(f"Upload returned {resp.status_code}: {resp.text[:300]}")
+            raise TestFailureError(f"Upload returned {resp.status_code}: {resp.text[:300]}")
         print(f"    Upload response: {resp.status_code}")
 
         # Download file
@@ -423,14 +411,12 @@ def test_file_upload_download():
             timeout=30,
         )
         if resp.status_code >= 400:
-            raise TestFailure(
-                f"Download returned {resp.status_code}: {resp.text[:300]}"
-            )
+            raise TestFailureError(f"Download returned {resp.status_code}: {resp.text[:300]}")
         downloaded = resp.content
         print(f"    Download response: {resp.status_code}, size={len(downloaded)}")
 
         if downloaded != test_content:
-            raise TestFailure(
+            raise TestFailureError(
                 f"Content mismatch!\n  Uploaded: {test_content!r}\n  Downloaded: {downloaded!r}"
             )
         print("    Content integrity verified")
@@ -442,20 +428,15 @@ def test_file_upload_download():
             timeout=30,
         )
         if resp.status_code >= 400:
-            raise TestFailure(
-                f"File list returned {resp.status_code}: {resp.text[:300]}"
-            )
+            raise TestFailureError(f"File list returned {resp.status_code}: {resp.text[:300]}")
         file_list = resp.json()
         print(f"    File listing: {file_list}")
 
         # Verify our file appears in the listing
         if isinstance(file_list, list):
-            filenames = [
-                f.get("name", f) if isinstance(f, dict) else str(f)
-                for f in file_list
-            ]
+            filenames = [f.get("name", f) if isinstance(f, dict) else str(f) for f in file_list]
             if test_filename not in filenames:
-                raise TestFailure(
+                raise TestFailureError(
                     f"Uploaded file '{test_filename}' not in listing: {filenames}"
                 )
             print(f"    File '{test_filename}' found in listing")
@@ -478,9 +459,7 @@ def test_idle_timeout():
     try:
         data = create_sandbox_session(client)
         session_id = data["sessionId"]
-        session_data = poll_session_status(
-            client, session_id, {"SANDBOX_READY", "SESSION_RUNNING"}
-        )
+        session_data = poll_session_status(client, session_id, {"SANDBOX_READY", "SESSION_RUNNING"})
         print(f"    Session ready: {session_data['status']}")
 
         # Don't send any activity — wait for idle timeout
@@ -497,16 +476,16 @@ def test_idle_timeout():
                 print("    Idle timeout works correctly")
             else:
                 print(f"    Session ended with: {terminated['status']}")
-        except TestFailure:
+        except TestFailureError:
             # Check current status
             current = get_session(client, session_id)
             status = current.get("status", "?")
             if status in {"SANDBOX_READY", "SESSION_RUNNING"}:
-                raise TestFailure(
+                raise TestFailureError(
                     f"Session still {status} after 60s — is SANDBOX_IDLE_TIMEOUT_SECONDS "
                     "set to a short value (e.g. 10)? Is SANDBOX_LIFECYCLE_CHECK_INTERVAL_SECONDS "
                     "set to a short value (e.g. 2)?"
-                )
+                ) from None
             raise
 
     finally:
@@ -559,11 +538,11 @@ def test_provisioning_timeout():
                     "To test provisioning timeout, use an invalid AGENT_RUNTIME_PATH "
                     "or set SANDBOX_PROVISION_TIMEOUT_SECONDS=1"
                 )
-        except TestFailure:
+        except TestFailureError:
             current = get_session(client, session_id)
-            raise TestFailure(
+            raise TestFailureError(
                 f"Session stuck in {current.get('status')} — neither registered nor timed out"
-            )
+            ) from None
 
     finally:
         if session_id:
@@ -613,7 +592,7 @@ def main():
             print(f"    PASS: {name}")
             passed += 1
             results.append((name, True, None))
-        except TestFailure as e:
+        except TestFailureError as e:
             print(f"    FAIL: {name} -- {e}")
             failed += 1
             results.append((name, False, str(e)))
