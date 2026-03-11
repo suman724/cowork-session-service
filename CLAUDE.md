@@ -19,6 +19,11 @@ Python, FastAPI, PynamoDB/boto3, Pydantic models from `cowork-platform`.
 | `POST` | `/sessions/{sessionId}/register` | Sandbox self-registration — validates task ARN, stores endpoint, transitions to `SANDBOX_READY`, returns policy bundle |
 | `POST` | `/sessions/{sessionId}/cancel` | Cancel session |
 | `GET` | `/sessions/{sessionId}` | Get session metadata (includes sandbox fields when present) |
+| `POST` | `/sessions/{sessionId}/rpc` | Proxy: forward JSON-RPC to sandbox `/rpc` |
+| `GET` | `/sessions/{sessionId}/events` | Proxy: SSE stream from sandbox (supports `Last-Event-ID`) |
+| `POST` | `/sessions/{sessionId}/upload` | Proxy: forward multipart file upload to sandbox |
+| `GET` | `/sessions/{sessionId}/files/{path}` | Proxy: download file from sandbox workspace |
+| `GET` | `/sessions/{sessionId}/files` | Proxy: list files or download workspace archive |
 
 ## Session Handshake Flow
 
@@ -88,6 +93,20 @@ Pluggable `SandboxLauncher` abstraction with two implementations:
 
 Key config: `SANDBOX_MAX_CONCURRENT_SESSIONS` (default 5), `ECS_CLUSTER`, `ECS_TASK_DEFINITION`, `ECS_SUBNETS`, `ECS_SECURITY_GROUPS`, `AGENT_RUNTIME_PATH`, `SESSION_SERVICE_URL`.
 
+## Proxy Layer
+
+`ProxyService` resolves sandbox endpoints with TTL caching (30s default), validates session ownership and state, and batch-updates `lastActivityAt` (at most once per 60s). Five proxy endpoints forward browser traffic to sandbox containers:
+
+- `POST /rpc` — JSON-RPC (buffered request/response)
+- `GET /events` — SSE streaming (chunk-by-chunk, `Last-Event-ID` pass-through)
+- `POST /upload` — Multipart file upload
+- `GET /files/{path}` — File download
+- `GET /files` — File listing or archive download
+
+Error mapping: sandbox unreachable → 503, session not found → 404, inactive → 409, wrong owner → 403. Separate `httpx.AsyncClient` with its own connection pool for sandbox connections.
+
+Key config: `PROXY_ENDPOINT_CACHE_TTL_SECONDS` (30), `PROXY_ACTIVITY_BATCH_SECONDS` (60), `PROXY_TIMEOUT_SECONDS` (30), `PROXY_SSE_TIMEOUT_SECONDS` (14400).
+
 ## External Calls
 
 - Policy Service: `GET /policy-bundles?tenantId=...&userId=...&sessionId=...&capabilities=...`
@@ -124,6 +143,7 @@ cowork-session-service/
         health.py             # GET /health, GET /ready
         sessions.py           # Session CRUD endpoints
         sandbox.py            # Sandbox registration endpoint
+        proxy.py              # Proxy endpoints (rpc, events, upload, files)
         tasks.py              # Task CRUD endpoints
       services/
         __init__.py
@@ -131,6 +151,7 @@ cowork-session-service/
         compatibility.py      # Version/capability compatibility checks
         sandbox_launcher.py   # SandboxLauncher protocol + LaunchResult
         sandbox_service.py    # Sandbox provisioning and termination orchestration
+        proxy_service.py      # Endpoint caching, ownership validation, activity tracking
       repositories/
         __init__.py
         base.py               # SessionRepository Protocol
@@ -198,6 +219,9 @@ ServiceError (base — carries code, message, retryable, details)
   ├── SandboxRegistrationError → 409 (wrong state, task ARN mismatch)
   ├── SandboxProvisionError  → 502 (ECS RunTask failure, subprocess error)
   ├── ConcurrentSessionLimitError → 409 (too many active sandbox sessions)
+  ├── ForbiddenError         → 403 (not session owner)
+  ├── SessionInactiveError   → 409 (session not in proxyable state)
+  ├── SandboxUnavailableError → 503 (sandbox container not responding)
   ├── PolicyBundleError      → 502 (Policy Service returned invalid bundle)
   ├── DownstreamError        → 502/503 (Policy Service or Workspace Service unreachable)
   └── IncompatibleError      → 409, code: POLICY_BUNDLE_INVALID

@@ -20,7 +20,8 @@ from session_service.exceptions import ServiceError
 from session_service.middleware import RequestIdMiddleware
 from session_service.repositories.dynamo import DynamoSessionRepository
 from session_service.repositories.dynamo_task import DynamoTaskRepository
-from session_service.routes import health, sandbox, sessions, tasks
+from session_service.routes import health, proxy, sandbox, sessions, tasks
+from session_service.services.proxy_service import ProxyService
 from session_service.services.sandbox_service import SandboxService
 from session_service.services.session_service import SessionService
 from session_service.services.task_service import TaskService
@@ -87,11 +88,28 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             ecs_launcher = EcsSandboxLauncher(ecs_client, settings)
             sandbox_service = SandboxService(ecs_launcher, repo, settings)
 
+        # Proxy HTTP client (separate pool, longer SSE timeout)
+        proxy_http = httpx.AsyncClient(
+            timeout=httpx.Timeout(
+                settings.proxy_timeout_seconds,
+                connect=10.0,
+            ),
+            follow_redirects=False,
+        )
+        proxy_service = ProxyService(
+            repo,
+            endpoint_cache_ttl=settings.proxy_endpoint_cache_ttl_seconds,
+            activity_batch_seconds=settings.proxy_activity_batch_seconds,
+        )
+
         app.state.session_service = SessionService(
             repo, policy_client, workspace_client, settings, sandbox_service
         )
         app.state.task_service = TaskService(task_repo, repo)
         app.state.sandbox_service = sandbox_service
+        app.state.proxy_service = proxy_service
+        app.state.proxy_http = proxy_http
+        app.state.proxy_sse_timeout = settings.proxy_sse_timeout_seconds
 
         logger.info(
             "session_service_started",
@@ -100,6 +118,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
         yield
 
+        await proxy_http.aclose()
         await policy_http.aclose()
         await workspace_http.aclose()
         logger.info("session_service_stopped")
@@ -117,6 +136,7 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     app.include_router(sessions.router)
     app.include_router(sandbox.router)
+    app.include_router(proxy.router)
     app.include_router(tasks.router)
 
     app.add_exception_handler(ServiceError, _service_error_handler)

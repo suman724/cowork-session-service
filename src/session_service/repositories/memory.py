@@ -68,5 +68,11 @@ class InMemorySessionRepository:
             session.expected_task_arn = expected_task_arn
             session.updated_at = datetime.now(UTC)
 
+    async def update_last_activity(self, session_id: str, last_activity_at: datetime) -> None:
+        session = self._sessions.get(session_id)
+        if session:
+            session.last_activity_at = last_activity_at
+            session.updated_at = datetime.now(UTC)
+
     async def delete(self, session_id: str) -> None:
         self._sessions.pop(session_id, None)

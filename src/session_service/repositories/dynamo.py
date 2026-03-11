@@ -120,6 +120,16 @@ class DynamoSessionRepository:
             ExpressionAttributeValues={":arn": expected_task_arn, ":ua": now},
         )
 
+    async def update_last_activity(self, session_id: str, last_activity_at: datetime) -> None:
+        await self._table.update_item(
+            Key={"sessionId": session_id},
+            UpdateExpression="SET lastActivityAt = :la, updatedAt = :ua",
+            ExpressionAttributeValues={
+                ":la": last_activity_at.isoformat(),
+                ":ua": last_activity_at.isoformat(),
+            },
+        )
+
     async def delete(self, session_id: str) -> None:
         await self._table.delete_item(Key={"sessionId": session_id})
 

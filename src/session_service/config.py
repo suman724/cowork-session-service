@@ -30,6 +30,11 @@ class Settings(BaseSettings):
     # Local launcher settings (for development)
     agent_runtime_path: str = "../cowork-agent-runtime"
     session_service_url: str = "http://localhost:8000"
+    # Proxy settings
+    proxy_endpoint_cache_ttl_seconds: int = 30
+    proxy_activity_batch_seconds: int = 60
+    proxy_timeout_seconds: float = 30.0
+    proxy_sse_timeout_seconds: float = 14400.0  # 4 hours
 
     model_config = {"env_prefix": "", "env_file": ".env", "extra": "ignore"}
 
