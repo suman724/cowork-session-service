@@ -503,3 +503,64 @@ class TestProxyRoutes:
                 headers={"X-User-Id": "user-1"},
             )
         assert resp.status_code == 200
+
+    @pytest.mark.unit
+    async def test_rpc_sandbox_500_becomes_503(self) -> None:
+        """Sandbox 5xx errors should be translated to 503, not passed raw."""
+        repo = InMemorySessionRepository()
+        session = _make_session()
+        await repo.create(session)
+
+        mock_response = httpx.Response(
+            500,
+            json={"error": "internal sandbox error"},
+            headers={"content-type": "application/json"},
+        )
+        mock_http = MockProxyHttp(mock_response)
+
+        app = _create_test_app(repo, mock_http)  # type: ignore[arg-type]
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.post(
+                "/sessions/sess-1/rpc",
+                json={"jsonrpc": "2.0", "method": "test", "id": 1},
+                headers={"X-User-Id": "user-1"},
+            )
+        assert resp.status_code == 503
+        assert resp.json()["code"] == "SANDBOX_UNREACHABLE"
+
+    @pytest.mark.unit
+    async def test_file_download_path_traversal_rejected(self) -> None:
+        """Paths with '..' components should be rejected at the handler level."""
+        from unittest.mock import MagicMock
+
+        from session_service.exceptions import ValidationError as SvcValidationError
+        from session_service.routes.proxy import proxy_file_download
+
+        repo = InMemorySessionRepository()
+        session = _make_session()
+        await repo.create(session)
+
+        proxy = ProxyService(repo)
+        mock_http = MockProxyHttp(httpx.Response(200))
+        mock_request = MagicMock()
+        mock_request.headers = {"X-User-Id": "user-1"}
+
+        # Path with .. segments
+        with pytest.raises(SvcValidationError, match="Invalid file path"):
+            await proxy_file_download(
+                session_id="sess-1",
+                file_path="src/../../etc/passwd",
+                request=mock_request,
+                proxy=proxy,
+                proxy_http=mock_http,  # type: ignore[arg-type]
+            )
+
+        # Absolute path
+        with pytest.raises(SvcValidationError, match="Invalid file path"):
+            await proxy_file_download(
+                session_id="sess-1",
+                file_path="/etc/passwd",
+                request=mock_request,
+                proxy=proxy,
+                proxy_http=mock_http,  # type: ignore[arg-type]
+            )

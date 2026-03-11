@@ -74,20 +74,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         policy_client = PolicyClient(policy_http)
         workspace_client = WorkspaceClient(workspace_http)
 
-        # Build sandbox launcher based on config
-        sandbox_service: SandboxService | None = None
-        if settings.sandbox_launcher_type == "local":
-            from session_service.clients.local_launcher import LocalSandboxLauncher
-
-            local_launcher = LocalSandboxLauncher(settings)
-            sandbox_service = SandboxService(local_launcher, repo, settings)
-        elif settings.sandbox_launcher_type == "ecs":
-            from session_service.clients.ecs_launcher import EcsSandboxLauncher
-
-            ecs_client = await stack.enter_async_context(boto_session.client("ecs", **boto_kwargs))
-            ecs_launcher = EcsSandboxLauncher(ecs_client, settings)
-            sandbox_service = SandboxService(ecs_launcher, repo, settings)
-
         # Proxy HTTP client (separate pool, longer SSE timeout)
         proxy_http = httpx.AsyncClient(
             timeout=httpx.Timeout(
@@ -101,6 +87,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             endpoint_cache_ttl=settings.proxy_endpoint_cache_ttl_seconds,
             activity_batch_seconds=settings.proxy_activity_batch_seconds,
         )
+
+        # Build sandbox launcher based on config
+        sandbox_service: SandboxService | None = None
+        if settings.sandbox_launcher_type == "local":
+            from session_service.clients.local_launcher import LocalSandboxLauncher
+
+            local_launcher = LocalSandboxLauncher(settings)
+            sandbox_service = SandboxService(local_launcher, repo, settings, proxy_service)
+        elif settings.sandbox_launcher_type == "ecs":
+            from session_service.clients.ecs_launcher import EcsSandboxLauncher
+
+            ecs_client = await stack.enter_async_context(boto_session.client("ecs", **boto_kwargs))
+            ecs_launcher = EcsSandboxLauncher(ecs_client, settings)
+            sandbox_service = SandboxService(ecs_launcher, repo, settings, proxy_service)
 
         app.state.session_service = SessionService(
             repo, policy_client, workspace_client, settings, sandbox_service

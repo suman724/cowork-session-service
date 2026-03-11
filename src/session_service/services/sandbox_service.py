@@ -8,6 +8,7 @@ from session_service.config import Settings
 from session_service.exceptions import ConcurrentSessionLimitError, SandboxProvisionError
 from session_service.models.domain import SessionDomain
 from session_service.repositories.base import SessionRepository
+from session_service.services.proxy_service import ProxyService
 from session_service.services.sandbox_launcher import SandboxLauncher
 
 logger = structlog.get_logger()
@@ -21,10 +22,12 @@ class SandboxService:
         launcher: SandboxLauncher,
         repo: SessionRepository,
         settings: Settings,
+        proxy_service: ProxyService | None = None,
     ) -> None:
         self._launcher = launcher
         self._repo = repo
         self._settings = settings
+        self._proxy_service = proxy_service
 
     async def provision_sandbox(self, session: SessionDomain) -> str:
         """Launch a sandbox for a session. Returns the task identifier.
@@ -106,6 +109,8 @@ class SandboxService:
                 )
 
         await self._repo.update_status(session.session_id, "SANDBOX_TERMINATED")
+        if self._proxy_service:
+            self._proxy_service.invalidate_cache(session.session_id)
         logger.info("sandbox_terminated", session_id=session.session_id)
 
     async def _fail_session(self, session_id: str) -> None:

@@ -49,8 +49,8 @@ class ProxyService:
         self._activity_batch_seconds = activity_batch_seconds
         # LRU cache: session_id -> (endpoint, user_id, fetched_at_monotonic)
         self._endpoint_cache: OrderedDict[str, tuple[str, str, float]] = OrderedDict()
-        # Activity batching: session_id -> last_write_monotonic
-        self._last_activity_write: dict[str, float] = {}
+        # Activity batching: session_id -> last_write_monotonic (bounded)
+        self._last_activity_write: OrderedDict[str, float] = OrderedDict()
 
     async def resolve_sandbox(self, session_id: str, user_id: str) -> str:
         """Look up sandbox endpoint, validate ownership and state. Returns endpoint URL."""
@@ -104,6 +104,9 @@ class ProxyService:
             logger.warning("activity_update_failed", session_id=session_id)
             return
         self._last_activity_write[session_id] = now_mono
+        self._last_activity_write.move_to_end(session_id)
+        while len(self._last_activity_write) > _MAX_CACHE_ENTRIES:
+            self._last_activity_write.popitem(last=False)
         logger.debug("activity_updated", session_id=session_id)
 
     def invalidate_cache(self, session_id: str) -> None:

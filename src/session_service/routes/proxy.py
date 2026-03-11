@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, Request, UploadFile
 from fastapi.responses import StreamingResponse
 
 from session_service.dependencies import get_proxy_http, get_proxy_service
-from session_service.exceptions import SandboxUnavailableError
+from session_service.exceptions import SandboxUnavailableError, ValidationError
 from session_service.services.proxy_service import ProxyService
 
 logger = structlog.get_logger()
@@ -57,10 +57,11 @@ async def _forward_request(
             send_kwargs: dict[str, Any] = {"stream": True}
             if timeout:
                 send_kwargs["timeout"] = timeout
-            return await proxy_http.send(req, **send_kwargs)
-        if timeout:
-            kwargs["timeout"] = timeout
-        return await proxy_http.request(method, url, **kwargs)
+            resp = await proxy_http.send(req, **send_kwargs)
+        else:
+            if timeout:
+                kwargs["timeout"] = timeout
+            resp = await proxy_http.request(method, url, **kwargs)
     except httpx.ConnectError as exc:
         logger.warning(f"{log_prefix}_connect_error", session_id=session_id, error=str(exc))
         proxy.invalidate_cache(session_id)
@@ -68,6 +69,19 @@ async def _forward_request(
     except httpx.TimeoutException as exc:
         logger.warning(f"{log_prefix}_timeout", session_id=session_id, error=str(exc))
         raise SandboxUnavailableError("Sandbox request timed out") from exc
+
+    # Translate sandbox 5xx into proxy 503 — don't pass raw internal errors
+    if resp.status_code >= 500:
+        logger.warning(
+            f"{log_prefix}_sandbox_error",
+            session_id=session_id,
+            status=resp.status_code,
+        )
+        if stream:
+            await resp.aclose()
+        raise SandboxUnavailableError(f"Sandbox returned error (status {resp.status_code})")
+
+    return resp
 
 
 async def _stream_and_close(
@@ -220,6 +234,10 @@ async def proxy_file_download(
     proxy_http: httpx.AsyncClient = Depends(get_proxy_http),
 ) -> StreamingResponse:
     """Forward file download from sandbox workspace."""
+    # Path traversal prevention — reject paths that escape workspace root
+    if ".." in file_path.split("/") or file_path.startswith("/"):
+        raise ValidationError("Invalid file path")
+
     user_id = _get_user_id(request)
     endpoint = await proxy.resolve_sandbox(session_id, user_id)
 
