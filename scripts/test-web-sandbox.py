@@ -6,16 +6,17 @@ Scenarios:
   1. Full lifecycle: create → provision → ready → proxy RPC → SSE events → cancel
   2. SSE reconnect: disconnect mid-stream, reconnect with Last-Event-ID, verify replay
   3. File upload/download through proxy
-  4. Idle timeout: sandbox terminated after inactivity
-  5. Provisioning timeout: sandbox never registers → SESSION_FAILED
-  6. Session not found: GET non-existent session → 404
-  7. Proxy inactive session: RPC to cancelled session → 409
-  8. Invalid registration token: register with wrong token → 409
+  4. Workspace preseed sync: upload to S3 before sandbox starts, verify sync on startup
+  5. Idle timeout: sandbox terminated after inactivity
+  6. Provisioning timeout: sandbox never registers → SESSION_FAILED
+  7. Session not found: GET non-existent session → 404
+  8. Proxy inactive session: RPC to cancelled session → 409
+  9. Invalid registration token: register with wrong token → 409
 
 Requires:
   - Session Service running on :8000 with SANDBOX_LAUNCHER_TYPE=local
   - Policy Service running on :8001
-  - Workspace Service running on :8002
+  - Workspace Service running on :8002 (also used directly for preseed sync test)
   - LocalStack running on :4566 (DynamoDB + S3)
   - LLM Gateway reachable (LLM_GATEWAY_ENDPOINT env var on session-service)
 
@@ -42,6 +43,7 @@ import httpx
 # --- Configuration ---
 
 SESSION_SERVICE_URL = os.environ.get("SESSION_SERVICE_URL", "http://localhost:8000")
+WORKSPACE_SERVICE_URL = os.environ.get("WORKSPACE_SERVICE_URL", "http://localhost:8002")
 TENANT_ID = "dev-tenant"
 USER_ID = "dev-user"
 POLL_INTERVAL = 0.5
@@ -484,6 +486,100 @@ def test_file_upload_download():
         client.close()
 
 
+def test_workspace_preseed_sync():
+    """Upload files to Workspace Service (S3) before sandbox starts, verify they sync on startup.
+
+    Flow:
+      1. Create session → get sessionId + workspaceId (SANDBOX_PROVISIONING)
+      2. Upload files directly to Workspace Service using workspaceId
+      3. Wait for sandbox to be ready (agent-runtime downloads workspace files on startup)
+      4. Download files through Session Service proxy and verify content matches
+    """
+    client = httpx.Client()
+    session_id = None
+    try:
+        # Step 1: Create sandbox session
+        data = create_sandbox_session(client)
+        session_id = data["sessionId"]
+        workspace_id = data.get("workspaceId")
+        if not workspace_id:
+            raise TestFailureError("Session response missing workspaceId")
+        print(f"    workspaceId: {workspace_id[:12]}...")
+
+        # Step 2: Upload files to Workspace Service (S3) while sandbox is provisioning
+        test_files = {
+            "preseed-readme.txt": b"This file was pre-seeded via Workspace Service.\n",
+            "data/config.json": b'{"setting": "value", "count": 42}\n',
+        }
+        for file_path, content in test_files.items():
+            resp = client.post(
+                f"{WORKSPACE_SERVICE_URL}/workspaces/{workspace_id}/files",
+                params={"path": file_path},
+                files={"file": (file_path.split("/")[-1], content, "application/octet-stream")},
+                timeout=30,
+            )
+            if resp.status_code >= 400:
+                raise TestFailureError(
+                    f"Workspace upload of '{file_path}' failed: "
+                    f"{resp.status_code}: {resp.text[:300]}"
+                )
+            print(f"    Uploaded to S3: {file_path} ({len(content)} bytes)")
+
+        # Verify files are in Workspace Service
+        resp = client.get(
+            f"{WORKSPACE_SERVICE_URL}/workspaces/{workspace_id}/files",
+            timeout=10,
+        )
+        if resp.status_code >= 400:
+            raise TestFailureError(
+                f"Workspace file list failed: {resp.status_code}: {resp.text[:300]}"
+            )
+        ws_files = resp.json()
+        ws_paths = {f.get("path", f) if isinstance(f, dict) else str(f) for f in ws_files}
+        print(f"    Workspace Service files: {ws_paths}")
+
+        # Step 3: Wait for sandbox to be ready (it will download files during startup)
+        print("    Waiting for SANDBOX_READY (sandbox will sync workspace files)...")
+        poll_session_status(client, session_id, {"SANDBOX_READY", "SESSION_RUNNING"})
+        print("    Sandbox is ready")
+
+        # Give sandbox a moment to finish any remaining file I/O
+        time.sleep(1)
+
+        # Step 4: Verify files are available through sandbox proxy
+        for file_path, expected_content in test_files.items():
+            for attempt in range(3):
+                resp = client.get(
+                    f"{SESSION_SERVICE_URL}/sessions/{session_id}/files/{file_path}",
+                    headers={"X-User-Id": USER_ID},
+                    timeout=30,
+                )
+                if resp.status_code != 503 or attempt == 2:
+                    break
+                print(f"    Download got 503, retrying ({attempt + 1}/3)...")
+                time.sleep(2)
+
+            if resp.status_code >= 400:
+                raise TestFailureError(
+                    f"Download of '{file_path}' from sandbox failed: "
+                    f"{resp.status_code}: {resp.text[:300]}"
+                )
+            if resp.content != expected_content:
+                raise TestFailureError(
+                    f"Content mismatch for '{file_path}'!\n"
+                    f"  Expected: {expected_content!r}\n"
+                    f"  Got:      {resp.content!r}"
+                )
+            print(f"    Verified via proxy: {file_path} — content matches")
+
+        print("    Workspace preseed sync works correctly")
+
+    finally:
+        if session_id:
+            cancel_session(client, session_id)
+        client.close()
+
+
 def test_idle_timeout():
     """Idle timeout: create sandbox, don't send activity, verify SANDBOX_TERMINATED.
 
@@ -718,6 +814,7 @@ def main():
     scenarios = [
         ("Full Lifecycle", test_full_lifecycle),
         ("File Upload/Download", test_file_upload_download),
+        ("Workspace Preseed Sync", test_workspace_preseed_sync),
         ("SSE Reconnect", test_sse_reconnect),
         ("Idle Timeout", test_idle_timeout),
         ("Provisioning Timeout", test_provisioning_timeout),
