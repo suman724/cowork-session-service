@@ -15,6 +15,7 @@ from session_service.exceptions import (
     ConflictError,
     DownstreamError,
     IncompatibleError,
+    SandboxRegistrationError,
     SessionNotFoundError,
     ValidationError,
 )
@@ -47,6 +48,7 @@ class SessionService:
         workspace_hint: dict[str, Any] | None = None,
         client_info: dict[str, Any],
         supported_capabilities: list[str],
+        network_access: str | None = None,
     ) -> dict[str, Any]:
         """Create a new session — the handshake endpoint."""
         if not tenant_id.strip() or not user_id.strip():
@@ -55,24 +57,30 @@ class SessionService:
         desktop_version = client_info.get("desktopAppVersion", "0.0.0")
         agent_version = client_info.get("localAgentHostVersion", "0.0.0")
 
-        # Compatibility check
-        is_compatible, reason = check_compatibility(
-            desktop_app_version=desktop_version,
-            agent_host_version=agent_version,
-            supported_capabilities=supported_capabilities,
-            settings=self._settings,
-        )
+        is_sandbox = execution_environment == "cloud_sandbox"
+
+        # Compatibility check (skipped for sandbox — no desktop app)
+        is_compatible = True
+        reason = ""
+        if not is_sandbox:
+            is_compatible, reason = check_compatibility(
+                desktop_app_version=desktop_version,
+                agent_host_version=agent_version,
+                supported_capabilities=supported_capabilities,
+                settings=self._settings,
+            )
 
         # Resolve workspace
         # Priority: explicit workspaceId > localPaths > general (new workspace)
+        # Sandbox sessions use "cloud" workspace scope
         workspace_id: str
         if workspace_hint and workspace_hint.get("workspaceId"):
             # Reuse an existing workspace (e.g., "Continue Conversation")
             workspace_id = workspace_hint["workspaceId"]
         else:
             local_path = None
-            workspace_scope = "general"
-            if workspace_hint and workspace_hint.get("localPaths"):
+            workspace_scope = "cloud" if is_sandbox else "general"
+            if not is_sandbox and workspace_hint and workspace_hint.get("localPaths"):
                 local_paths = workspace_hint["localPaths"]
                 if not isinstance(local_paths, list) or not local_paths:
                     raise ValidationError("workspaceHint.localPaths must be a non-empty list")
@@ -99,8 +107,10 @@ class SessionService:
         # Fetch policy bundle before persisting session so a downstream failure
         # does not leave an orphaned SESSION_CREATED record
         policy_bundle = None
-        initial_status = "SESSION_CREATED"
-        if is_compatible:
+        if is_sandbox:
+            # Sandbox: start in SANDBOX_PROVISIONING, policy fetched later at registration
+            initial_status = "SANDBOX_PROVISIONING"
+        elif is_compatible:
             policy_bundle = await self._policy_client.get_policy_bundle(
                 tenant_id=tenant_id,
                 user_id=user_id,
@@ -108,6 +118,8 @@ class SessionService:
                 capabilities=supported_capabilities,
             )
             initial_status = "SESSION_RUNNING"
+        else:
+            initial_status = "SESSION_CREATED"
 
         session = SessionDomain(
             session_id=session_id,
@@ -122,6 +134,7 @@ class SessionService:
             created_at=now,
             expires_at=expires_at,
             ttl=int(expires_at.timestamp()),
+            network_access=network_access if is_sandbox else None,
         )
         await self._repo.create(session)
 
@@ -129,6 +142,7 @@ class SessionService:
             "session_created",
             session_id=session_id,
             workspace_id=workspace_id,
+            execution_environment=execution_environment,
             compatible=is_compatible,
         )
 
@@ -146,7 +160,58 @@ class SessionService:
             "approvalUiEnabled": False,
             "mcpEnabled": False,
         }
+        if is_sandbox:
+            result["status"] = initial_status
         return result
+
+    async def register_sandbox(
+        self,
+        session_id: str,
+        *,
+        sandbox_endpoint: str,
+        task_arn: str,
+    ) -> dict[str, Any]:
+        """Register a sandbox container — called by the container after startup."""
+        session = await self._repo.get(session_id)
+        if session is None:
+            raise SessionNotFoundError(session_id)
+
+        if session.status != "SANDBOX_PROVISIONING":
+            raise SandboxRegistrationError(
+                f"Cannot register sandbox: session is in {session.status} state, "
+                "expected SANDBOX_PROVISIONING"
+            )
+
+        # Validate task ARN matches what was stored at launch time
+        if session.expected_task_arn and task_arn != session.expected_task_arn:
+            raise SandboxRegistrationError(
+                f"Task ARN mismatch: expected {session.expected_task_arn}, got {task_arn}"
+            )
+
+        # Fetch policy bundle for the sandbox
+        policy_bundle = await self._policy_client.get_policy_bundle(
+            tenant_id=session.tenant_id,
+            user_id=session.user_id,
+            session_id=session_id,
+            capabilities=session.supported_capabilities,
+        )
+
+        # Atomically store endpoint and transition to SANDBOX_READY
+        await self._repo.register_sandbox(session_id, sandbox_endpoint, "SANDBOX_READY")
+
+        logger.info(
+            "sandbox_registered",
+            session_id=session_id,
+            sandbox_endpoint=sandbox_endpoint,
+        )
+
+        return {
+            "sessionId": session_id,
+            "workspaceId": session.workspace_id,
+            "workspaceServiceUrl": self._settings.workspace_service_url,
+            "llmGatewayEndpoint": "",  # Sandbox reads from env var
+            "policyBundle": policy_bundle,
+        }
 
     async def resume_session(self, session_id: str) -> dict[str, Any]:
         """Resume an existing session — re-fetch policy bundle."""
@@ -210,7 +275,7 @@ class SessionService:
         if session is None:
             raise SessionNotFoundError(session_id)
 
-        return {
+        result: dict[str, Any] = {
             "sessionId": session.session_id,
             "workspaceId": session.workspace_id,
             "tenantId": session.tenant_id,
@@ -222,6 +287,14 @@ class SessionService:
             "createdAt": session.created_at.isoformat(),
             "expiresAt": session.expires_at.isoformat(),
         }
+        # Include sandbox-specific fields when present
+        if session.sandbox_endpoint is not None:
+            result["sandboxEndpoint"] = session.sandbox_endpoint
+        if session.network_access is not None:
+            result["networkAccess"] = session.network_access
+        if session.last_activity_at is not None:
+            result["lastActivityAt"] = session.last_activity_at.isoformat()
+        return result
 
     async def update_session_name(
         self, session_id: str, name: str, auto_named: bool = True

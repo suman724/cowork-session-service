@@ -20,7 +20,7 @@ from session_service.exceptions import ServiceError
 from session_service.middleware import RequestIdMiddleware
 from session_service.repositories.dynamo import DynamoSessionRepository
 from session_service.repositories.dynamo_task import DynamoTaskRepository
-from session_service.routes import health, sessions, tasks
+from session_service.routes import health, sandbox, sessions, tasks
 from session_service.services.session_service import SessionService
 from session_service.services.task_service import TaskService
 
@@ -93,6 +93,7 @@ def create_app() -> FastAPI:
 
     app.include_router(health.router)
     app.include_router(sessions.router)
+    app.include_router(sandbox.router)
     app.include_router(tasks.router)
 
     app.add_exception_handler(ServiceError, _service_error_handler)

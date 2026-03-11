@@ -41,3 +41,13 @@ class CreateSessionRequest(BaseModel):
     workspace_hint: dict[str, Any] | None = Field(alias="workspaceHint", default=None)
     client_info: dict[str, Any] = Field(alias="clientInfo", default_factory=dict)
     supported_capabilities: list[str] = Field(alias="supportedCapabilities", default_factory=list)
+    network_access: Literal["enabled", "disabled"] | None = Field(
+        alias="networkAccess", default=None
+    )
+
+
+class SandboxRegistrationRequest(BaseModel):
+    """POST /sessions/{session_id}/register request body."""
+
+    sandbox_endpoint: str = Field(alias="sandboxEndpoint", min_length=1)
+    task_arn: str = Field(alias="taskArn", min_length=1)

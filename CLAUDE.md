@@ -16,8 +16,9 @@ Python, FastAPI, PynamoDB/boto3, Pydantic models from `cowork-platform`.
 |--------|------|---------|
 | `POST` | `/sessions` | Create session — resolve workspace, fetch policy, return sessionId + policyBundle + featureFlags |
 | `POST` | `/sessions/{sessionId}/resume` | Resume session (after completion, failure, or crash) — re-validate policy, extend expiry, return refreshed bundle |
+| `POST` | `/sessions/{sessionId}/register` | Sandbox self-registration — validates task ARN, stores endpoint, transitions to `SANDBOX_READY`, returns policy bundle |
 | `POST` | `/sessions/{sessionId}/cancel` | Cancel session |
-| `GET` | `/sessions/{sessionId}` | Get session metadata |
+| `GET` | `/sessions/{sessionId}` | Get session metadata (includes sandbox fields when present) |
 
 ## Session Handshake Flow
 
@@ -31,7 +32,8 @@ LLM Gateway config (endpoint + auth token) is NOT in the response — agent-runt
 ## Workspace Resolution
 
 - `workspaceHint.localPaths` provided → resolve/create a `local`-scoped workspace (reused per project)
-- No `workspaceHint` → create a `general`-scoped workspace (single-use)
+- No `workspaceHint` (desktop) → create a `general`-scoped workspace (single-use)
+- `cloud_sandbox` sessions → create a `cloud`-scoped workspace (S3-backed)
 
 ## Compatibility Check
 
@@ -57,13 +59,21 @@ SessionService
 |-----|----|----|-----|
 | `tenantId-userId-index` | `tenantId` | `createdAt` | List sessions for a user |
 
-Stored: `sessionId`, `tenantId`, `userId`, `workspaceId`, `executionEnvironment`, `status`, `createdAt`, `expiresAt`, `ttl`, `clientInfo`
+Stored: `sessionId`, `tenantId`, `userId`, `workspaceId`, `executionEnvironment`, `status`, `createdAt`, `expiresAt`, `ttl`, `clientInfo`, `sandboxEndpoint`, `taskArn`, `expectedTaskArn`, `networkAccess`, `lastActivityAt`
 
 ## Session States
 
+Desktop sessions:
 `SESSION_CREATED` → `SESSION_RUNNING` ↔ `WAITING_FOR_LLM` / `WAITING_FOR_TOOL` / `WAITING_FOR_APPROVAL` / `SESSION_PAUSED` → `SESSION_COMPLETED` / `SESSION_FAILED` / `SESSION_CANCELLED`
 
-Resumable: `SESSION_COMPLETED` and `SESSION_FAILED` can transition back to `SESSION_RUNNING` via `POST /sessions/{id}/resume`. `SESSION_CANCELLED` is terminal.
+Sandbox sessions (cloud_sandbox):
+`SANDBOX_PROVISIONING` → `SANDBOX_READY` → `SESSION_RUNNING` ↔ (same as desktop) → `SANDBOX_TERMINATED`
+
+`SANDBOX_PROVISIONING`: ECS task is starting. Set at session creation for `cloud_sandbox` sessions.
+`SANDBOX_READY`: Container registered via `POST /sessions/{id}/register`. Sandbox is ready for work.
+`SANDBOX_TERMINATED`: Container shut down (idle timeout, max duration, or explicit). Terminal state.
+
+Resumable: `SESSION_COMPLETED` and `SESSION_FAILED` can transition back to `SESSION_RUNNING` via `POST /sessions/{id}/resume`. `SESSION_CANCELLED` and `SANDBOX_TERMINATED` are terminal.
 
 ## External Calls
 
@@ -99,6 +109,8 @@ cowork-session-service/
         __init__.py
         health.py             # GET /health, GET /ready
         sessions.py           # Session CRUD endpoints
+        sandbox.py            # Sandbox registration endpoint
+        tasks.py              # Task CRUD endpoints
       services/
         __init__.py
         session_service.py    # Business logic
@@ -165,6 +177,7 @@ ServiceError (base — carries code, message, retryable, details)
   ├── NotFoundError          → 404, code: SESSION_NOT_FOUND
   ├── ConflictError          → 409 (e.g., session already exists)
   ├── ValidationError        → 400, code: INVALID_REQUEST
+  ├── SandboxRegistrationError → 409 (wrong state, task ARN mismatch)
   ├── PolicyBundleError      → 502 (Policy Service returned invalid bundle)
   ├── DownstreamError        → 502/503 (Policy Service or Workspace Service unreachable)
   └── IncompatibleError      → 409, code: POLICY_BUNDLE_INVALID

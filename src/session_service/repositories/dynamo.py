@@ -68,6 +68,19 @@ class DynamoSessionRepository:
             ExpressionAttributeValues={":name": name, ":an": auto_named, ":ua": now},
         )
 
+    async def register_sandbox(self, session_id: str, sandbox_endpoint: str, status: str) -> None:
+        now = datetime.now(UTC).isoformat()
+        await self._table.update_item(
+            Key={"sessionId": session_id},
+            UpdateExpression="SET sandboxEndpoint = :ep, #s = :status, updatedAt = :ua",
+            ExpressionAttributeNames={"#s": "status"},
+            ExpressionAttributeValues={
+                ":ep": sandbox_endpoint,
+                ":status": status,
+                ":ua": now,
+            },
+        )
+
     async def delete(self, session_id: str) -> None:
         await self._table.delete_item(Key={"sessionId": session_id})
 
@@ -94,6 +107,17 @@ def _to_item(s: SessionDomain) -> dict[str, Any]:
     item["autoNamed"] = s.auto_named
     if s.ttl is not None:
         item["ttl"] = s.ttl
+    # Sandbox-specific fields (cloud_sandbox sessions only)
+    if s.sandbox_endpoint is not None:
+        item["sandboxEndpoint"] = s.sandbox_endpoint
+    if s.task_arn is not None:
+        item["taskArn"] = s.task_arn
+    if s.expected_task_arn is not None:
+        item["expectedTaskArn"] = s.expected_task_arn
+    if s.network_access is not None:
+        item["networkAccess"] = s.network_access
+    if s.last_activity_at is not None:
+        item["lastActivityAt"] = s.last_activity_at.isoformat()
     return item
 
 
@@ -114,4 +138,12 @@ def _from_item(item: dict[str, Any]) -> SessionDomain:
         expires_at=datetime.fromisoformat(item["expiresAt"]),
         updated_at=datetime.fromisoformat(item["updatedAt"]) if item.get("updatedAt") else None,
         ttl=item.get("ttl"),
+        # Sandbox-specific fields
+        sandbox_endpoint=item.get("sandboxEndpoint"),
+        task_arn=item.get("taskArn"),
+        expected_task_arn=item.get("expectedTaskArn"),
+        network_access=item.get("networkAccess"),
+        last_activity_at=(
+            datetime.fromisoformat(item["lastActivityAt"]) if item.get("lastActivityAt") else None
+        ),
     )

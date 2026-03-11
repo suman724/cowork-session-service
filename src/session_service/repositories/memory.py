@@ -44,5 +44,12 @@ class InMemorySessionRepository:
             session.auto_named = auto_named
             session.updated_at = datetime.now(UTC)
 
+    async def register_sandbox(self, session_id: str, sandbox_endpoint: str, status: str) -> None:
+        session = self._sessions.get(session_id)
+        if session:
+            session.sandbox_endpoint = sandbox_endpoint
+            session.status = status  # type: ignore[assignment]
+            session.updated_at = datetime.now(UTC)
+
     async def delete(self, session_id: str) -> None:
         self._sessions.pop(session_id, None)

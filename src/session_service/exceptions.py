@@ -63,3 +63,10 @@ class ValidationError(ServiceError):
 
     def __init__(self, message: str = "Invalid request") -> None:
         super().__init__(message, code="INVALID_REQUEST", status_code=400)
+
+
+class SandboxRegistrationError(ServiceError):
+    """Sandbox registration failed (wrong state, task ARN mismatch, etc.)."""
+
+    def __init__(self, message: str = "Sandbox registration failed") -> None:
+        super().__init__(message, code="SANDBOX_REGISTRATION_FAILED", status_code=409)
