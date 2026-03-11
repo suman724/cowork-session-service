@@ -676,7 +676,7 @@ def test_invalid_registration_token():
             json={
                 "registrationToken": fake_token,
                 "taskArn": fake_task_arn,
-                "endpoint": "http://localhost:9999",
+                "sandboxEndpoint": "http://localhost:9999",
             },
             timeout=10,
         )
