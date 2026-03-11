@@ -53,11 +53,11 @@ async def _forward_request(
     """Send a request to the sandbox, translating connection/timeout errors."""
     try:
         if stream:
-            req = proxy_http.build_request(method, url, **kwargs)
-            send_kwargs: dict[str, Any] = {"stream": True}
+            build_kwargs = {**kwargs}
             if timeout:
-                send_kwargs["timeout"] = timeout
-            resp = await proxy_http.send(req, **send_kwargs)
+                build_kwargs["timeout"] = timeout
+            req = proxy_http.build_request(method, url, **build_kwargs)
+            resp = await proxy_http.send(req, stream=True)
         else:
             if timeout:
                 kwargs["timeout"] = timeout

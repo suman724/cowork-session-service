@@ -8,6 +8,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 from typing import Any
 
 import structlog
@@ -20,6 +21,8 @@ logger = structlog.get_logger()
 
 # Track spawned subprocesses for cleanup
 _processes: dict[str, subprocess.Popen[bytes]] = {}
+# Track log-forwarding threads for cleanup
+_log_threads: dict[str, threading.Thread] = {}
 
 
 def _find_free_port() -> int:
@@ -29,6 +32,16 @@ def _find_free_port() -> int:
         s.bind(("", 0))
         port: int = s.getsockname()[1]
         return port
+
+
+def _stream_subprocess_logs(proc: subprocess.Popen[bytes], session_id: str) -> None:
+    """Forward subprocess stderr to structlog in a background thread."""
+    if not proc.stderr:
+        return
+    for raw_line in proc.stderr:
+        line = raw_line.decode("utf-8", errors="replace").rstrip()
+        if line:
+            logger.info("sandbox_log", session_id=session_id, message=line)
 
 
 class LocalSandboxLauncher:
@@ -80,6 +93,15 @@ class LocalSandboxLauncher:
         task_id = f"local:{proc.pid}"
         _processes[task_id] = proc
 
+        # Forward subprocess stderr to structlog in background
+        log_thread = threading.Thread(
+            target=_stream_subprocess_logs,
+            args=(proc, session_id),
+            daemon=True,
+        )
+        log_thread.start()
+        _log_threads[task_id] = log_thread
+
         logger.info(
             "local_sandbox_launched",
             session_id=session_id,
@@ -108,7 +130,11 @@ class LocalSandboxLauncher:
             proc.kill()
             await asyncio.get_event_loop().run_in_executor(None, proc.wait)
 
-        # Close file descriptors to prevent leaks
+        # Wait for log thread to finish draining
+        log_thread = _log_threads.pop(task_id, None)
+        if log_thread:
+            log_thread.join(timeout=2)
+
         _close_proc_fds(proc)
         logger.info("local_sandbox_stopped", task_id=task_id)
 

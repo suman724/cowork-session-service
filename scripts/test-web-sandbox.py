@@ -260,11 +260,35 @@ def test_full_lifecycle():
         if "error" in rpc_resp:
             raise TestFailureError(f"StartTask RPC error: {rpc_resp['error']}")
 
-        # Wait for task completion or timeout
+        # Wait for task completion or timeout, printing progress
         print("    Waiting for SSE events...")
         deadline = time.time() + 60
+        last_count = 0
         while time.time() < deadline:
-            # Check if we got a terminal event (task_completed, task_failed)
+            # Print new events as they arrive
+            if len(events) > last_count:
+                for e in events[last_count:]:
+                    data = e.get("data", {})
+                    if isinstance(data, dict):
+                        et = data.get("eventType", "?")
+                        detail = ""
+                        if et in ("llm_chunk", "LlmChunk"):
+                            detail = f" chunk={data.get('text', data.get('chunk', ''))!r}"
+                        elif et in ("task_completed", "task_failed", "TaskCompleted", "TaskFailed"):
+                            detail = f" status={data.get('status', '?')}"
+                        elif et in ("llm_response", "LlmResponse"):
+                            usage = data.get("usage", data.get("tokenUsage", {}))
+                            detail = f" tokens={usage}"
+                        elif et in ("step_completed", "StepCompleted"):
+                            detail = f" step={data.get('stepIndex', '?')}"
+                        elif "error" in str(et).lower() or "fail" in str(et).lower():
+                            detail = f" error={json.dumps(data)[:200]}"
+                        print(f"      Event: {et}{detail}")
+                    else:
+                        print(f"      Event: {e.get('event', '?')} data={str(data)[:100]}")
+                last_count = len(events)
+
+            # Check if we got a terminal event
             for e in events:
                 if isinstance(e.get("data"), dict):
                     et = e["data"].get("eventType", "")
@@ -277,13 +301,14 @@ def test_full_lifecycle():
         stop_event.set()
         sse_thread.join(timeout=5)
 
+        elapsed = time.time() - deadline + 60
         event_types = [
             e.get("data", {}).get("eventType", e.get("event", "?"))
             if isinstance(e.get("data"), dict)
             else e.get("event", "?")
             for e in events
         ]
-        print(f"    SSE events received: {len(events)}")
+        print(f"    SSE events received: {len(events)} in {elapsed:.1f}s")
         print(f"    Event types: {event_types}")
 
         if not events:
@@ -390,16 +415,24 @@ def test_file_upload_download():
         session_id = data["sessionId"]
         poll_session_status(client, session_id, {"SANDBOX_READY", "SESSION_RUNNING"})
 
+        # Give sandbox HTTP server a moment to be fully ready
+        time.sleep(2)
+
         test_content = b"Hello from test_file_upload_download!\nLine 2.\n"
         test_filename = "test-upload.txt"
 
-        # Upload file
-        resp = client.post(
-            f"{SESSION_SERVICE_URL}/sessions/{session_id}/upload",
-            files={"file": (test_filename, test_content, "text/plain")},
-            headers={"X-User-Id": USER_ID},
-            timeout=30,
-        )
+        # Upload file (retry on 503 — sandbox may still be starting HTTP server)
+        for attempt in range(3):
+            resp = client.post(
+                f"{SESSION_SERVICE_URL}/sessions/{session_id}/upload",
+                files={"file": (test_filename, test_content, "text/plain")},
+                headers={"X-User-Id": USER_ID},
+                timeout=30,
+            )
+            if resp.status_code != 503 or attempt == 2:
+                break
+            print(f"    Upload got 503, retrying ({attempt + 1}/3)...")
+            time.sleep(2)
         if resp.status_code >= 400:
             raise TestFailureError(f"Upload returned {resp.status_code}: {resp.text[:300]}")
         print(f"    Upload response: {resp.status_code}")

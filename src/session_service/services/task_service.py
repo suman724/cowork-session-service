@@ -32,7 +32,12 @@ class TaskService:
         if session is None:
             raise SessionNotFoundError(session_id)
 
-        if session.status not in ("SESSION_RUNNING", "WAITING_FOR_LLM", "WAITING_FOR_TOOL"):
+        if session.status not in (
+            "SANDBOX_READY",
+            "SESSION_RUNNING",
+            "WAITING_FOR_LLM",
+            "WAITING_FOR_TOOL",
+        ):
             raise ConflictError(f"Cannot create task in session with status {session.status}")
 
         now = datetime.now(UTC)
