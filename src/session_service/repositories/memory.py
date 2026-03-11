@@ -51,5 +51,22 @@ class InMemorySessionRepository:
             session.status = status  # type: ignore[assignment]
             session.updated_at = datetime.now(UTC)
 
+    async def count_active_sandboxes(self, tenant_id: str, user_id: str) -> int:
+        active_statuses = {"SANDBOX_PROVISIONING", "SANDBOX_READY", "SESSION_RUNNING"}
+        return sum(
+            1
+            for s in self._sessions.values()
+            if s.tenant_id == tenant_id
+            and s.user_id == user_id
+            and s.execution_environment == "cloud_sandbox"
+            and s.status in active_statuses
+        )
+
+    async def store_expected_task_arn(self, session_id: str, expected_task_arn: str) -> None:
+        session = self._sessions.get(session_id)
+        if session:
+            session.expected_task_arn = expected_task_arn
+            session.updated_at = datetime.now(UTC)
+
     async def delete(self, session_id: str) -> None:
         self._sessions.pop(session_id, None)

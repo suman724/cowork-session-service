@@ -25,7 +25,7 @@ async def dynamo_table() -> AsyncIterator[Any]:
         endpoint_url=DYNAMODB_ENDPOINT,
         region_name="us-east-1",
         aws_access_key_id="testing",
-        aws_secret_access_key="testing",  # noqa: S106
+        aws_secret_access_key="testing",
     ) as dynamodb:
         table = await dynamodb.create_table(
             TableName=table_name,

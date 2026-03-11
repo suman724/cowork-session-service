@@ -75,10 +75,24 @@ Sandbox sessions (cloud_sandbox):
 
 Resumable: `SESSION_COMPLETED` and `SESSION_FAILED` can transition back to `SESSION_RUNNING` via `POST /sessions/{id}/resume`. `SESSION_CANCELLED` and `SANDBOX_TERMINATED` are terminal.
 
+## Sandbox Launcher
+
+Pluggable `SandboxLauncher` abstraction with two implementations:
+
+| Config | Implementation | Use case |
+|--------|---------------|----------|
+| `SANDBOX_LAUNCHER_TYPE=ecs` | `EcsSandboxLauncher` — ECS RunTask/StopTask/DescribeTasks | Production |
+| `SANDBOX_LAUNCHER_TYPE=local` | `LocalSandboxLauncher` — subprocess spawn with free port | Development |
+
+`SandboxService` orchestrates provisioning (limit check → launch → store expected_task_arn) and termination (best-effort stop → status transition). Wired in `main.py` lifespan via `AsyncExitStack`.
+
+Key config: `SANDBOX_MAX_CONCURRENT_SESSIONS` (default 5), `ECS_CLUSTER`, `ECS_TASK_DEFINITION`, `ECS_SUBNETS`, `ECS_SECURITY_GROUPS`, `AGENT_RUNTIME_PATH`, `SESSION_SERVICE_URL`.
+
 ## External Calls
 
 - Policy Service: `GET /policy-bundles?tenantId=...&userId=...&sessionId=...&capabilities=...`
 - Workspace Service: `POST /workspaces` (create/resolve)
+- ECS (production): `RunTask`, `StopTask`, `DescribeTasks` via aioboto3
 
 ## Design Doc
 
@@ -115,6 +129,8 @@ cowork-session-service/
         __init__.py
         session_service.py    # Business logic
         compatibility.py      # Version/capability compatibility checks
+        sandbox_launcher.py   # SandboxLauncher protocol + LaunchResult
+        sandbox_service.py    # Sandbox provisioning and termination orchestration
       repositories/
         __init__.py
         base.py               # SessionRepository Protocol
@@ -124,6 +140,8 @@ cowork-session-service/
         __init__.py
         policy_client.py      # Policy Service HTTP client
         workspace_client.py   # Workspace Service HTTP client
+        ecs_launcher.py       # ECS Fargate sandbox launcher (production)
+        local_launcher.py     # Local subprocess sandbox launcher (development)
       models/
         __init__.py
         domain.py             # Session domain models
@@ -178,6 +196,8 @@ ServiceError (base — carries code, message, retryable, details)
   ├── ConflictError          → 409 (e.g., session already exists)
   ├── ValidationError        → 400, code: INVALID_REQUEST
   ├── SandboxRegistrationError → 409 (wrong state, task ARN mismatch)
+  ├── SandboxProvisionError  → 502 (ECS RunTask failure, subprocess error)
+  ├── ConcurrentSessionLimitError → 409 (too many active sandbox sessions)
   ├── PolicyBundleError      → 502 (Policy Service returned invalid bundle)
   ├── DownstreamError        → 502/503 (Policy Service or Workspace Service unreachable)
   └── IncompatibleError      → 409, code: POLICY_BUNDLE_INVALID

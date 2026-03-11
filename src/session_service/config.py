@@ -18,6 +18,19 @@ class Settings(BaseSettings):
     min_agent_host_version: str = "0.1.0"
     session_expiry_hours: int = 24
 
+    # Sandbox launcher configuration
+    sandbox_launcher_type: str = "ecs"  # "ecs" or "local"
+    sandbox_max_concurrent_sessions: int = 5
+    # ECS launcher settings
+    ecs_cluster: str = ""
+    ecs_task_definition: str = ""
+    ecs_subnets: list[str] = []
+    ecs_security_groups: list[str] = []
+    sandbox_image: str = ""
+    # Local launcher settings (for development)
+    agent_runtime_path: str = "../cowork-agent-runtime"
+    session_service_url: str = "http://localhost:8000"
+
     model_config = {"env_prefix": "", "env_file": ".env", "extra": "ignore"}
 
     @property

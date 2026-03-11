@@ -90,6 +90,36 @@ class DynamoSessionRepository:
                 "Sandbox registration failed: session status changed concurrently"
             ) from exc
 
+    async def count_active_sandboxes(self, tenant_id: str, user_id: str) -> int:
+        active_statuses = {"SANDBOX_PROVISIONING", "SANDBOX_READY", "SESSION_RUNNING"}
+        resp = await self._table.query(
+            IndexName="tenantId-userId-index",
+            KeyConditionExpression="tenantId = :tid",
+            FilterExpression=(
+                "userId = :uid AND executionEnvironment = :env AND #s IN (:s1, :s2, :s3)"
+            ),
+            ExpressionAttributeNames={"#s": "status"},
+            ExpressionAttributeValues={
+                ":tid": tenant_id,
+                ":uid": user_id,
+                ":env": "cloud_sandbox",
+                ":s1": "SANDBOX_PROVISIONING",
+                ":s2": "SANDBOX_READY",
+                ":s3": "SESSION_RUNNING",
+            },
+            Select="COUNT",
+        )
+        _ = active_statuses  # used to document intent
+        return int(resp.get("Count", 0))
+
+    async def store_expected_task_arn(self, session_id: str, expected_task_arn: str) -> None:
+        now = datetime.now(UTC).isoformat()
+        await self._table.update_item(
+            Key={"sessionId": session_id},
+            UpdateExpression="SET expectedTaskArn = :arn, updatedAt = :ua",
+            ExpressionAttributeValues={":arn": expected_task_arn, ":ua": now},
+        )
+
     async def delete(self, session_id: str) -> None:
         await self._table.delete_item(Key={"sessionId": session_id})
 
@@ -123,6 +153,8 @@ def _to_item(s: SessionDomain) -> dict[str, Any]:
         item["taskArn"] = s.task_arn
     if s.expected_task_arn is not None:
         item["expectedTaskArn"] = s.expected_task_arn
+    if s.registration_token is not None:
+        item["registrationToken"] = s.registration_token
     if s.network_access is not None:
         item["networkAccess"] = s.network_access
     if s.last_activity_at is not None:
@@ -151,6 +183,7 @@ def _from_item(item: dict[str, Any]) -> SessionDomain:
         sandbox_endpoint=item.get("sandboxEndpoint"),
         task_arn=item.get("taskArn"),
         expected_task_arn=item.get("expectedTaskArn"),
+        registration_token=item.get("registrationToken"),
         network_access=item.get("networkAccess"),
         last_activity_at=(
             datetime.fromisoformat(item["lastActivityAt"]) if item.get("lastActivityAt") else None

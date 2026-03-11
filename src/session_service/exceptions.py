@@ -70,3 +70,17 @@ class SandboxRegistrationError(ServiceError):
 
     def __init__(self, message: str = "Sandbox registration failed") -> None:
         super().__init__(message, code="SANDBOX_REGISTRATION_FAILED", status_code=409)
+
+
+class SandboxProvisionError(ServiceError):
+    """Sandbox provisioning failed (ECS RunTask failure, subprocess error, etc.)."""
+
+    def __init__(self, message: str = "Sandbox provisioning failed") -> None:
+        super().__init__(message, code="SANDBOX_PROVISION_FAILED", status_code=502)
+
+
+class ConcurrentSessionLimitError(ServiceError):
+    """User has too many active sandbox sessions."""
+
+    def __init__(self, message: str = "Concurrent sandbox session limit reached") -> None:
+        super().__init__(message, code="CONCURRENT_SESSION_LIMIT", status_code=409)

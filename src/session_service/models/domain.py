@@ -91,6 +91,7 @@ class SessionDomain(BaseModel):
     sandbox_endpoint: str | None = None
     task_arn: str | None = None
     expected_task_arn: str | None = None
+    registration_token: str | None = None
     network_access: Literal["enabled", "disabled"] | None = None
     last_activity_at: datetime | None = None
 

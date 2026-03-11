@@ -55,3 +55,4 @@ class SandboxRegistrationRequest(BaseModel):
         pattern=r"^https?://.+",
     )
     task_arn: str = Field(alias="taskArn", min_length=1)
+    registration_token: str | None = Field(alias="registrationToken", default=None)

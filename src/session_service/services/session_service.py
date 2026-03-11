@@ -22,6 +22,7 @@ from session_service.exceptions import (
 from session_service.models.domain import SessionDomain
 from session_service.repositories.base import SessionRepository
 from session_service.services.compatibility import check_compatibility
+from session_service.services.sandbox_service import SandboxService
 
 logger = structlog.get_logger()
 
@@ -33,11 +34,13 @@ class SessionService:
         policy_client: PolicyClient,
         workspace_client: WorkspaceClient,
         settings: Settings,
+        sandbox_service: SandboxService | None = None,
     ) -> None:
         self._repo = repo
         self._policy_client = policy_client
         self._workspace_client = workspace_client
         self._settings = settings
+        self._sandbox_service = sandbox_service
 
     async def create_session(
         self,
@@ -121,6 +124,10 @@ class SessionService:
         else:
             initial_status = "SESSION_CREATED"
 
+        # Generate registration token for sandbox sessions — stored BEFORE launch
+        # so fast-starting containers can validate immediately
+        registration_token = str(uuid.uuid4()) if is_sandbox else None
+
         session = SessionDomain(
             session_id=session_id,
             workspace_id=workspace_id,
@@ -134,9 +141,14 @@ class SessionService:
             created_at=now,
             expires_at=expires_at,
             ttl=int(expires_at.timestamp()),
+            registration_token=registration_token,
             network_access=network_access if is_sandbox else None,
         )
         await self._repo.create(session)
+
+        # Provision sandbox after persisting session record
+        if is_sandbox and self._sandbox_service:
+            await self._sandbox_service.provision_sandbox(session)
 
         logger.info(
             "session_created",
@@ -170,6 +182,7 @@ class SessionService:
         *,
         sandbox_endpoint: str,
         task_arn: str,
+        registration_token: str | None = None,
     ) -> dict[str, Any]:
         """Register a sandbox container — called by the container after startup."""
         session = await self._repo.get(session_id)
@@ -181,6 +194,14 @@ class SessionService:
                 f"Cannot register sandbox: session is in {session.status} state, "
                 "expected SANDBOX_PROVISIONING"
             )
+
+        # Validate registration token (generated pre-launch, stored on session,
+        # passed to container as env var — no race condition)
+        if session.registration_token:
+            if not registration_token:
+                raise SandboxRegistrationError("Registration token is required")
+            if registration_token != session.registration_token:
+                raise SandboxRegistrationError("Registration token mismatch")
 
         # Validate task ARN matches what was stored at launch time
         if session.expected_task_arn and task_arn != session.expected_task_arn:

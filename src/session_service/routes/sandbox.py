@@ -23,4 +23,5 @@ async def register_sandbox(
         session_id,
         sandbox_endpoint=body.sandbox_endpoint,
         task_arn=body.task_arn,
+        registration_token=body.registration_token,
     )

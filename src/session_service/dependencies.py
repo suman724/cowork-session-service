@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from fastapi import Request
 
+from session_service.services.sandbox_service import SandboxService
 from session_service.services.session_service import SessionService
 from session_service.services.task_service import TaskService
 
@@ -14,3 +15,7 @@ def get_session_service(request: Request) -> SessionService:
 
 def get_task_service(request: Request) -> TaskService:
     return request.app.state.task_service  # type: ignore[no-any-return]
+
+
+def get_sandbox_service(request: Request) -> SandboxService | None:
+    return request.app.state.sandbox_service  # type: ignore[no-any-return]
