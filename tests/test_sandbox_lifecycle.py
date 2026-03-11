@@ -93,7 +93,7 @@ def task_repo() -> InMemoryTaskRepository:
 @pytest.fixture
 def mock_sandbox_service() -> SandboxService:
     svc = AsyncMock(spec=SandboxService)
-    svc.terminate_sandbox = AsyncMock()
+    svc.stop_sandbox_container = AsyncMock()
     return svc
 
 
@@ -125,7 +125,7 @@ class TestIdleTimeout:
         s = await session_repo.get("sess-1")
         assert s is not None
         assert s.status == "SANDBOX_TERMINATED"
-        mock_sandbox_service.terminate_sandbox.assert_called_once()
+        mock_sandbox_service.stop_sandbox_container.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_idle_session_with_running_task_not_terminated(
@@ -149,7 +149,7 @@ class TestIdleTimeout:
         s = await session_repo.get("sess-1")
         assert s is not None
         assert s.status == "SESSION_RUNNING"
-        mock_sandbox_service.terminate_sandbox.assert_not_called()
+        mock_sandbox_service.stop_sandbox_container.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_idle_session_with_completed_task_terminated(
@@ -195,7 +195,7 @@ class TestIdleTimeout:
         s = await session_repo.get("sess-1")
         assert s is not None
         assert s.status == "SESSION_RUNNING"
-        mock_sandbox_service.terminate_sandbox.assert_not_called()
+        mock_sandbox_service.stop_sandbox_container.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_idle_uses_created_at_when_no_last_activity(
@@ -249,7 +249,7 @@ class TestProvisioningTimeout:
         assert s is not None
         assert s.status == "SESSION_FAILED"
         # Provisioning timeout does NOT call terminate_sandbox (no container to stop)
-        mock_sandbox_service.terminate_sandbox.assert_not_called()
+        mock_sandbox_service.stop_sandbox_container.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_recent_provisioning_not_failed(
@@ -302,7 +302,7 @@ class TestMaxDuration:
         s = await session_repo.get("sess-1")
         assert s is not None
         assert s.status == "SANDBOX_TERMINATED"
-        mock_sandbox_service.terminate_sandbox.assert_called_once()
+        mock_sandbox_service.stop_sandbox_container.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_within_max_duration_not_terminated(
@@ -475,7 +475,7 @@ class TestErrorResilience:
         task_repo: InMemoryTaskRepository,
         mock_sandbox_service: SandboxService,
     ) -> None:
-        """If terminate_sandbox raises, lifecycle manager continues."""
+        """If stop_sandbox_container raises, lifecycle manager continues."""
         session = _make_session(
             status="SESSION_RUNNING",
             created_at=datetime.now(UTC) - timedelta(hours=5),
@@ -483,7 +483,7 @@ class TestErrorResilience:
         )
         await session_repo.create(session)
 
-        mock_sandbox_service.terminate_sandbox.side_effect = RuntimeError("connection refused")
+        mock_sandbox_service.stop_sandbox_container.side_effect = RuntimeError("connection refused")
 
         cfg = _settings(sandbox_max_duration_seconds=300)
         mgr = SandboxLifecycleManager(session_repo, task_repo, mock_sandbox_service, cfg)
@@ -530,7 +530,7 @@ class TestDesktopSessionsIgnored:
         s = await session_repo.get("sess-desktop")
         assert s is not None
         assert s.status == "SESSION_RUNNING"
-        mock_sandbox_service.terminate_sandbox.assert_not_called()
+        mock_sandbox_service.stop_sandbox_container.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -551,7 +551,7 @@ class TestMultipleStatuses:
             repo = InMemorySessionRepository()
             t_repo = InMemoryTaskRepository()
             mock_svc = AsyncMock(spec=SandboxService)
-            mock_svc.terminate_sandbox = AsyncMock()
+            mock_svc.stop_sandbox_container = AsyncMock()
 
             session = _make_session(
                 session_id=f"sess-{status}",

@@ -96,6 +96,16 @@ class SandboxService:
         Best-effort — if shutdown of the sandbox fails, we still transition
         the session to SANDBOX_TERMINATED.
         """
+        await self.stop_sandbox_container(session)
+        await self._repo.update_status(session.session_id, "SANDBOX_TERMINATED")
+        logger.info("sandbox_terminated", session_id=session.session_id)
+
+    async def stop_sandbox_container(self, session: SessionDomain) -> None:
+        """Stop the sandbox container and invalidate proxy cache.
+
+        Does NOT update session status — caller is responsible for that.
+        Used by SandboxLifecycleManager which handles status via conditional update.
+        """
         task_id = session.expected_task_arn or session.task_arn
         if task_id:
             try:
@@ -107,11 +117,8 @@ class SandboxService:
                     task_id=task_id,
                     error=str(exc),
                 )
-
-        await self._repo.update_status(session.session_id, "SANDBOX_TERMINATED")
         if self._proxy_service:
             self._proxy_service.invalidate_cache(session.session_id)
-        logger.info("sandbox_terminated", session_id=session.session_id)
 
     async def _fail_session(self, session_id: str) -> None:
         """Best-effort transition to SESSION_FAILED — retry once on failure."""

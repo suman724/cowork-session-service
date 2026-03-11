@@ -162,9 +162,9 @@ class SandboxLifecycleManager:
             # Another instance already transitioned this session
             return
 
-        # Stop the sandbox container (best-effort)
+        # Stop the sandbox container (best-effort, status already updated above)
         try:
-            await self._sandbox_service.terminate_sandbox(session)
+            await self._sandbox_service.stop_sandbox_container(session)
         except Exception:
             logger.warning(
                 "sandbox_lifecycle_terminate_failed",

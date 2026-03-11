@@ -33,26 +33,31 @@ VALID_TRANSITIONS: dict[str, set[str]] = {
         "SESSION_COMPLETED",
         "SESSION_FAILED",
         "SESSION_CANCELLED",
+        "SANDBOX_TERMINATED",  # Sandbox lifecycle manager (idle/max-duration)
     },
     "WAITING_FOR_LLM": {
         "SESSION_RUNNING",
         "SESSION_FAILED",
         "SESSION_CANCELLED",
+        "SANDBOX_TERMINATED",  # Sandbox lifecycle manager
     },
     "WAITING_FOR_TOOL": {
         "SESSION_RUNNING",
         "SESSION_FAILED",
         "SESSION_CANCELLED",
+        "SANDBOX_TERMINATED",  # Sandbox lifecycle manager
     },
     "WAITING_FOR_APPROVAL": {
         "SESSION_RUNNING",
         "SESSION_FAILED",
         "SESSION_CANCELLED",
+        "SANDBOX_TERMINATED",  # Sandbox lifecycle manager
     },
     "SESSION_PAUSED": {
         "SESSION_RUNNING",
         "SESSION_FAILED",
         "SESSION_CANCELLED",
+        "SANDBOX_TERMINATED",  # Sandbox lifecycle manager
     },
     "SESSION_COMPLETED": {"SESSION_RUNNING"},  # Allow resume
     "SESSION_FAILED": {"SESSION_RUNNING"},  # Allow resume after failure

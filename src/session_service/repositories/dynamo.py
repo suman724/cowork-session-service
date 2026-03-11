@@ -132,21 +132,25 @@ class DynamoSessionRepository:
 
     async def list_sandbox_sessions_by_status(self, statuses: set[str]) -> list[SessionDomain]:
         status_list = sorted(statuses)
-        names = {f"#s{i}": f"s{i}" for i in range(len(status_list))}
         values = {f":s{i}": s for i, s in enumerate(status_list)}
         values[":env"] = "cloud_sandbox"
         status_expr = ", ".join(f":s{i}" for i in range(len(status_list)))
         filter_expr = f"executionEnvironment = :env AND #status IN ({status_expr})"
-        # Use a reserved-word alias for status
-        attr_names = {"#status": "status"}
-        # DynamoDB IN expression uses a single attribute name
-        resp = await self._table.scan(
-            FilterExpression=filter_expr,
-            ExpressionAttributeNames=attr_names,
-            ExpressionAttributeValues=values,
-        )
-        _ = names  # intentionally unused — status_expr uses :s{i} values directly
-        return [_from_item(item) for item in resp.get("Items", [])]
+
+        items: list[dict[str, Any]] = []
+        kwargs: dict[str, Any] = {
+            "FilterExpression": filter_expr,
+            "ExpressionAttributeNames": {"#status": "status"},
+            "ExpressionAttributeValues": values,
+        }
+        while True:
+            resp = await self._table.scan(**kwargs)
+            items.extend(resp.get("Items", []))
+            last_key = resp.get("LastEvaluatedKey")
+            if not last_key:
+                break
+            kwargs["ExclusiveStartKey"] = last_key
+        return [_from_item(item) for item in items]
 
     async def conditional_update_status(
         self, session_id: str, new_status: str, expected_status: str
