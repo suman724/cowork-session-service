@@ -2,7 +2,7 @@
 
 Table: {env}-sessions
   PK: sessionId
-  GSI: tenantId-userId-index (PK=tenantId, SK=userId)
+  GSI: tenantId-userId-index (PK=tenantId, SK=createdAt)
   TTL attribute: ttl
 """
 
