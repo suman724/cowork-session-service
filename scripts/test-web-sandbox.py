@@ -8,6 +8,9 @@ Scenarios:
   3. File upload/download through proxy
   4. Idle timeout: sandbox terminated after inactivity
   5. Provisioning timeout: sandbox never registers → SESSION_FAILED
+  6. Session not found: GET non-existent session → 404
+  7. Proxy inactive session: RPC to cancelled session → 409
+  8. Invalid registration token: register with wrong token → 409
 
 Requires:
   - Session Service running on :8000 with SANDBOX_LAUNCHER_TYPE=local
@@ -32,6 +35,7 @@ import os
 import sys
 import threading
 import time
+import uuid
 
 import httpx
 
@@ -583,6 +587,112 @@ def test_provisioning_timeout():
         client.close()
 
 
+# --- Error path tests ---
+
+
+def test_session_not_found():
+    """GET /sessions/{id} with a non-existent session ID returns 404."""
+    client = httpx.Client()
+    try:
+        fake_id = str(uuid.uuid4())
+        resp = client.get(
+            f"{SESSION_SERVICE_URL}/sessions/{fake_id}",
+            timeout=10,
+        )
+        print(f"    GET /sessions/{fake_id[:12]}... → {resp.status_code}")
+        if resp.status_code != 404:
+            raise TestFailureError(
+                f"Expected 404 for non-existent session, got {resp.status_code}: {resp.text[:300]}"
+            )
+        print("    Correctly returned 404 for non-existent session")
+    finally:
+        client.close()
+
+
+def test_proxy_inactive_session():
+    """Proxy RPC to a cancelled session returns 409."""
+    client = httpx.Client()
+    session_id = None
+    try:
+        # Create and wait for sandbox to be ready
+        data = create_sandbox_session(client)
+        session_id = data["sessionId"]
+        poll_session_status(client, session_id, {"SANDBOX_READY", "SESSION_RUNNING"})
+        print(f"    Session {session_id[:12]}... is ready")
+
+        # Cancel the session
+        resp = client.post(
+            f"{SESSION_SERVICE_URL}/sessions/{session_id}/cancel",
+            timeout=10,
+        )
+        if resp.status_code >= 500:
+            raise TestFailureError(f"Cancel returned {resp.status_code}: {resp.text[:300]}")
+        print(f"    Cancel response: {resp.status_code}")
+
+        # Try to proxy RPC to the cancelled session
+        rpc_body = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "StartTask",
+            "params": {
+                "taskId": "task-should-fail",
+                "prompt": "This should not work.",
+                "taskOptions": {"maxSteps": 1},
+            },
+        }
+        resp = client.post(
+            f"{SESSION_SERVICE_URL}/sessions/{session_id}/rpc",
+            json=rpc_body,
+            headers={"X-User-Id": USER_ID},
+            timeout=10,
+        )
+        print(f"    RPC to cancelled session → {resp.status_code}")
+        if resp.status_code != 409:
+            raise TestFailureError(
+                f"Expected 409 for RPC to cancelled session, got {resp.status_code}: "
+                f"{resp.text[:300]}"
+            )
+        print("    Correctly returned 409 for inactive session")
+    finally:
+        if session_id:
+            cancel_session(client, session_id)
+        client.close()
+
+
+def test_invalid_registration_token():
+    """POST /sessions/{id}/register with wrong token returns 409."""
+    client = httpx.Client()
+    session_id = None
+    try:
+        data = create_sandbox_session(client)
+        session_id = data["sessionId"]
+        print(f"    Session {session_id[:12]}... created (status: {data.get('status')})")
+
+        # Attempt registration with a fake token and task ARN
+        fake_token = str(uuid.uuid4())
+        fake_task_arn = f"arn:aws:ecs:us-east-1:123456789:task/fake-cluster/{uuid.uuid4()}"
+        resp = client.post(
+            f"{SESSION_SERVICE_URL}/sessions/{session_id}/register",
+            json={
+                "registrationToken": fake_token,
+                "taskArn": fake_task_arn,
+                "endpoint": "http://localhost:9999",
+            },
+            timeout=10,
+        )
+        print(f"    Register with fake token → {resp.status_code}")
+        if resp.status_code != 409:
+            raise TestFailureError(
+                f"Expected 409 for invalid registration, got {resp.status_code}: "
+                f"{resp.text[:300]}"
+            )
+        print("    Correctly returned 409 for invalid registration token")
+    finally:
+        if session_id:
+            cancel_session(client, session_id)
+        client.close()
+
+
 # --- Main ---
 
 
@@ -611,6 +721,10 @@ def main():
         ("SSE Reconnect", test_sse_reconnect),
         ("Idle Timeout", test_idle_timeout),
         ("Provisioning Timeout", test_provisioning_timeout),
+        # Error path tests
+        ("Session Not Found", test_session_not_found),
+        ("Proxy Inactive Session", test_proxy_inactive_session),
+        ("Invalid Registration Token", test_invalid_registration_token),
     ]
 
     total = len(scenarios)
