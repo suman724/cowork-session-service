@@ -184,6 +184,8 @@ cowork-session-service/
         requests.py           # API request models
         responses.py          # API response models
       exceptions.py           # Service-specific exceptions
+  scripts/
+    test-web-sandbox.py       # E2E integration test for web sandbox lifecycle
   tests/
     unit/                     # pytest -m unit (InMemory repos, mocked clients)
     service/                  # pytest -m service (DynamoDB Local)
@@ -216,6 +218,7 @@ make test              # pytest -m unit
 make test-unit         # pytest -m unit
 make test-service      # pytest -m service (requires DynamoDB Local)
 make test-integration  # pytest -m integration (requires LocalStack)
+make test-web-sandbox  # E2E web sandbox lifecycle (requires running services)
 make coverage          # pytest -m unit --cov --cov-fail-under=90
 make docker-build      # docker build -t session-service .
 make docker-run        # docker run with .env

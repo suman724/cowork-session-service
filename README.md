@@ -38,6 +38,9 @@ uvicorn session_service.main:app --reload
 # Run tests with coverage
 make coverage
 
+# Run web sandbox E2E integration tests (requires running services)
+make test-web-sandbox
+
 # Build Docker image
 make docker-build
 ```

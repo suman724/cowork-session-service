@@ -1,4 +1,4 @@
-.PHONY: help install run lint format format-check typecheck test test-integration build check clean coverage docker-build
+.PHONY: help install run lint format format-check typecheck test test-integration test-web-sandbox build check clean coverage docker-build
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -41,6 +41,9 @@ coverage: ## Run tests with coverage
 	coverage run -m pytest -m "unit or not service" -x -q
 	coverage report
 	coverage html
+
+test-web-sandbox: ## Run web sandbox E2E integration tests (requires running services)
+	python scripts/test-web-sandbox.py
 
 docker-build: ## Build Docker image
 	docker build -t cowork-session-service:latest .
